@@ -8,12 +8,15 @@ import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 from zipfile import ZipFile
 
 import pytest
 import setuptools
 from computer_use import paths
 from computer_use.errors import ComputerUseError
+from computer_use.native import desktop_probe
 from computer_use.native.connection import Connection
 from computer_use_native_tools import native
 
@@ -246,6 +249,45 @@ def test_source_build_includes_backend_or_status_in_manifest(tmp_path, monkeypat
         assert json.loads((resources / files[0]).read_bytes()) == {"reason": "unsupported_platform"}
 
 
+@pytest.mark.parametrize("driver_available", [True, False])
+def test_windows_source_wheel_only_bundles_runtime_files(tmp_path, monkeypatch, source_builder, driver_available):
+    driver_files = (
+        WINDOWS_DRIVER,
+        "os_adapter/windows/.build/computer-use-capture.exe",
+        "os_adapter/windows/.build/Interop.NativeUIA.dll",
+    )
+    payload = {
+        "format": 1,
+        "target": "windows-x86_64",
+        "protocol": native.NATIVE_PROTOCOL_VERSION,
+        "files": {name: {"sha256": hashlib.sha256(b"driver").hexdigest(), "mode": 0o755} for name in driver_files},
+    }
+
+    def build(command, **_):
+        if not driver_available:
+            raise subprocess.CalledProcessError(1, command)
+        stage = Path(command[-2])
+        for name in driver_files:
+            path = stage / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"driver")
+        (stage / "backend.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(subprocess, "run", build)
+    command = source_builder["BuildWithResources"](setuptools.Distribution({"packages": []}))
+    command.build_lib = str(tmp_path / "build")
+    command.native_platform = "win_amd64"
+    command.ensure_finalized()
+    command.run()
+
+    resources = Path(command.build_lib) / "computer_use/_resources"
+    expected = {"backend.json", *driver_files} if driver_available else {"backend-status.json"}
+    assert {path.relative_to(resources).as_posix() for path in resources.rglob("*") if path.is_file()} == (
+        expected | {"manifest.json"}
+    )
+    assert set(json.loads((resources / "manifest.json").read_bytes())) == expected
+
+
 @pytest.mark.parametrize(("reason", "detail", "code"), [
     ("native_build_failed", "could not be built during installation", "execution_failed"),
     ("unsupported_platform", "is unavailable on this operating system or architecture", "unsupported_operation"),
@@ -271,6 +313,7 @@ def test_unavailable_source_wheel_explains_startup_failure(installed, monkeypatc
 def test_installed_backend_check_requires_driver_resources(installed, monkeypatch, system, files):
     resources, home = installed
     monkeypatch.setattr(sys, "platform", system)
+    monkeypatch.setattr(paths, "_linux_desktop_unavailable_reason", lambda: None)
     (resources / "backend.json").write_text("{}", encoding="utf-8")
     assert paths.installed_backend_unavailable_reason() == "backend_missing"
     for name in files:
@@ -279,6 +322,88 @@ def test_installed_backend_check_requires_driver_resources(installed, monkeypatc
         path.touch()
     assert paths.installed_backend_unavailable_reason() is None
     assert not home.exists()
+
+
+def test_linux_installed_driver_reports_missing_desktop_without_preparing_runtime(installed, monkeypatch):
+    resources, home = installed
+    monkeypatch.setattr(sys, "platform", "linux")
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS"):
+        monkeypatch.delenv(name, raising=False)
+    (resources / "backend.json").write_text("{}", encoding="utf-8")
+    driver = resources / paths.LINUX_RUNTIME / "__main__.py"
+    driver.parent.mkdir(parents=True)
+    driver.touch()
+
+    assert paths.installed_backend_unavailable_reason() == "backend_missing"
+    assert driver.is_file()
+    assert not (resources / "backend-status.json").exists()
+    assert not home.exists()
+
+
+@pytest.mark.parametrize(("x11_available", "wayland_available"), [(True, False), (False, True), (False, False)])
+def test_linux_desktop_checks_both_displays(monkeypatch, x11_available, wayland_available):
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setattr(desktop_probe, "_display_reachable", lambda *, wayland: (
+        wayland_available if wayland else x11_available
+    ))
+    monkeypatch.setattr(desktop_probe, "_accessibility_reachable", lambda: False)
+
+    assert desktop_probe.desktop_available() is (x11_available or wayland_available)
+
+
+def test_linux_display_with_missing_library_symbol_is_unavailable(monkeypatch):
+    library = SimpleNamespace(wl_display_connect=Mock(return_value=1), wl_display_disconnect=Mock())
+    monkeypatch.setattr(desktop_probe.ctypes, "CDLL", lambda _: library)
+
+    assert desktop_probe._display_reachable(wayland=True) is False
+    library.wl_display_connect.assert_not_called()
+
+
+@pytest.mark.parametrize(("editable", "probe_code", "reason", "diagnostic"), [
+    (True, "", None, ""),
+    (False, "", None, ""),
+    (False, "raise SystemExit(3)", "backend_missing", ""),
+    (False, "raise RuntimeError('probe crashed')", "backend_missing", "probe crashed"),
+])
+def test_linux_backend_distinguishes_desktop_absence_and_probe_failure(
+    installed, monkeypatch, caplog, editable, probe_code, reason, diagnostic,
+):
+    resources, home = installed
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("COMPUTER_USE_PYTHON", sys.executable)
+    probe = resources.parent / "native/desktop_probe.py"
+    probe.parent.mkdir()
+    probe.write_text(probe_code, encoding="utf-8")
+    if editable:
+        monkeypatch.setattr(paths, "checkout_root", lambda: resources.parent.parent)
+    else:
+        (resources / "backend.json").write_text("{}", encoding="utf-8")
+        driver = resources / paths.LINUX_RUNTIME / "__main__.py"
+        driver.parent.mkdir(parents=True)
+        driver.touch()
+
+    assert paths.installed_backend_unavailable_reason() == reason
+    if diagnostic:
+        assert diagnostic in caplog.text
+    else:
+        assert not caplog.records
+    assert not home.exists()
+
+
+def test_linux_desktop_probe_timeout_reports_unavailable(monkeypatch, caplog, tmp_path):
+    monkeypatch.setattr(paths, "checkout_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("COMPUTER_USE_PYTHON", sys.executable)
+
+    def expire(command, *, timeout, **_):
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(subprocess, "run", expire)
+    assert paths.installed_backend_unavailable_reason() == "backend_missing"
+    assert "Linux desktop availability probe timed out" in caplog.text
 
 
 @pytest.fixture

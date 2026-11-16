@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -11,6 +12,10 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 from time import sleep
+
+from .native.desktop_probe import DESKTOP_UNAVAILABLE
+
+_LOG = logging.getLogger(__name__)
 
 LINUX_RUNTIME = Path("os_adapter/linux/.build/runtime")
 _MACOS_DRIVER = Path("os_adapter/macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver")
@@ -59,10 +64,42 @@ def installed_read_engine_unavailable_reason() -> str | None:
     return reason if reason in ("native_build_failed", "unsupported_platform") else "native_build_failed"
 
 
-def installed_backend_unavailable_reason() -> str | None:
-    """Check wheel resources without preparing a runtime or launching a driver."""
-    if checkout_root() is not None:
+def _linux_desktop_unavailable_reason() -> str | None:
+    if sys.platform != "linux":
         return None
+    session_variables = ("DISPLAY", "WAYLAND_DISPLAY", "AT_SPI_BUS_ADDRESS", "DBUS_SESSION_BUS_ADDRESS")
+    if os.environ.get("XDG_SESSION_TYPE") != "wayland" and not any(map(os.getenv, session_variables)):
+        return "backend_missing"
+    probe = Path(__file__).with_name("native") / "desktop_probe.py"
+    try:
+        result = subprocess.run(
+            [linux_python(), "-I", str(probe)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+            timeout=4,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _LOG.warning("Linux desktop availability probe timed out")
+    except OSError as error:
+        _LOG.warning("Could not launch Linux desktop availability probe: %s", error)
+    else:
+        if result.returncode == 0:
+            return None
+        if result.returncode != DESKTOP_UNAVAILABLE:
+            _LOG.warning(
+                "Linux desktop availability probe exited with %d: %s", result.returncode, result.stderr.strip(),
+            )
+    return "backend_missing"
+
+
+def installed_backend_unavailable_reason() -> str | None:
+    """Check wheel resources and the Linux session without launching a driver."""
+    if checkout_root() is not None:
+        return _linux_desktop_unavailable_reason()
     assets = Path(__file__).parent / "_resources"
     status_file = assets / "backend-status.json"
     try:
@@ -81,7 +118,9 @@ def installed_backend_unavailable_reason() -> str | None:
             )
         else:
             return "unsupported_platform"
-        return installed_read_engine_unavailable_reason() if available else "backend_missing"
+        if not available:
+            return "backend_missing"
+        return installed_read_engine_unavailable_reason() or _linux_desktop_unavailable_reason()
     except (AttributeError, OSError, ValueError):
         return "backend_missing"
 
