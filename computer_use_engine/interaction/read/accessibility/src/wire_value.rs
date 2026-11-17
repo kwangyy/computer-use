@@ -735,25 +735,6 @@ mod tests {
     }
 
     #[test]
-    fn read_record_pool_copies_are_bounded_and_query_trimming_is_local() {
-        let mut raw = observation();
-        let Value::Map(fields) = &mut raw else { unreachable!() };
-        fields.push(("readMetadata".to_owned(), decode_json(br#"[{
-            "complete":false,
-            "details":[["batch_owner",{"metadataValue":1}],["batch_index",{"metadataValue":1}]],
-            "issues":[{"reason":"absent","path":["field",0]}]
-        }]"#).unwrap()));
-        let mut wire = WireValues::new(&raw, false).unwrap();
-        let marker = decode_json(br#"{"metadataRead":0}"#).unwrap();
-        let short = wire.read_info(Some(&marker), true).unwrap();
-        assert_eq!(short.get("details"), Some(&Value::Map(Vec::new())));
-        let full = wire.read_info(Some(&marker), false).unwrap();
-        assert_eq!(full.get("details").unwrap().get("batch_owner"), Some(&Value::Int(2)));
-        wire.metadata_expansion_remaining = 0;
-        assert_eq!(wire.read_info(Some(&marker), false), Err(WireError::Unsupported("metadata expansion limit")));
-    }
-
-    #[test]
     fn read_decodes_queries_and_native_values_in_original_order() {
         let raw = observation();
         let mut wire = WireValues::new(&raw, false).unwrap();

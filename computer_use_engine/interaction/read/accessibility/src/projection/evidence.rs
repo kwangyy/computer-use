@@ -12,6 +12,15 @@ mod native_captions;
 
 type Aliases<'a> = HashMap<&'a str, NodeId>;
 type Issues<'a> = HashMap<&'a str, Vec<Issue<'a>>>;
+type NodeRows<'a> = HashMap<&'a str, &'a Value>;
+
+fn node_rows(value: Option<&Value>) -> NodeRows<'_> {
+    let mut index = HashMap::new();
+    for (key, value) in rows(value) {
+        index.entry(key.as_str()).or_insert(value);
+    }
+    index
+}
 
 fn seq(value: Option<&Value>) -> &[Value] { value.and_then(Value::as_seq).unwrap_or(&[]) }
 fn rows(value: Option<&Value>) -> &[(String, Value)] { value.and_then(Value::as_map).unwrap_or(&[]) }
@@ -303,14 +312,14 @@ fn value_line(node: &Value, fact: &Value, source: &Value, issues: &[Issue<'_>]) 
 
 fn source_conflicts(
     evidence: &mut CompressionEvidence, native: &Value, semantic: &Value, aliases: &Aliases<'_>,
-    ids: &HashMap<String, NodeId>, issue_rows: &Issues<'_>,
+    ids: &HashMap<String, NodeId>, issue_rows: &Issues<'_>, refs: &NodeRows<'_>,
 ) -> Result<()> {
     let mut scopes = HashMap::new();
     let mut pending: Vec<_> = seq(semantic.get("roots")).iter().map(|root| (root, None)).collect();
     while let Some((node, mut scope)) = pending.pop() {
         let reference = text(node, "ref").ok_or(ProjectionError::Invalid("semantic evidence has no reference"))?;
         if matches!(text(node, "role"), Some("window" | "sheet")) {
-            scope = semantic.get("refs").and_then(|refs| text(refs, reference));
+            scope = refs.get(reference).and_then(|token| token.as_str());
         }
         if let (Some(scope), Some(id)) = (scope, ids.get(reference)) {
             scopes.insert(*id, scope);
@@ -376,6 +385,10 @@ impl CompressionEvidence {
         let (issue_rows, global_gap) = issues(native);
         let by_token: HashMap<_, _> = seq(snapshot.facts.get("nodes")).iter().filter_map(|row| Some((text(row, "node")?, row))).collect();
         let refs = semantic.get("refs").ok_or(ProjectionError::Invalid("semantic evidence has no aliases"))?;
+        let native_nodes = node_rows(native.get("nodes"));
+        let diagnostics_by_token = node_rows(snapshot.metadata.get("diagnostic_fields"));
+        let reference_tokens = node_rows(Some(refs));
+        let value_fields = node_rows(semantic.get("value_fields"));
         let mut counts = HashMap::new();
         for (_, token) in rows(Some(refs)) {
             let token = token.as_str().ok_or(ProjectionError::Invalid("native token must be text"))?;
@@ -406,9 +419,9 @@ impl CompressionEvidence {
             if counts.get(token) == Some(&1) {
                 aliases.insert(token, id);
             }
-            let Some(node) = native.get("nodes").and_then(|nodes| nodes.get(token)) else { continue };
+            let Some(&node) = native_nodes.get(token) else { continue };
             let issues = issue_rows.get(token).map(Vec::as_slice).unwrap_or(&[]);
-            let diagnostics = seq(snapshot.metadata.get("diagnostic_fields").and_then(|items| items.get(token)));
+            let diagnostics = seq(diagnostics_by_token.get(token).copied());
             if !related.contains(token) && parent_count.get(token).copied().unwrap_or(0) <= 1 && provider_wrapper(node, issues, diagnostics) {
                 evidence.provider_wrappers.insert(id);
             }
@@ -417,11 +430,11 @@ impl CompressionEvidence {
             }
         }
         for (&token, &id) in &aliases {
-            let Some(node) = native.get("nodes").and_then(|nodes| nodes.get(token)) else { continue };
+            let Some(&node) = native_nodes.get(token) else { continue };
             let issues = issue_rows.get(token).map(Vec::as_slice).unwrap_or(&[]);
             let children = full_children(node, issues).and_then(|children| children.iter().map(|child| {
                 let token = child.as_str()?;
-                native.get("nodes")?.get(token)?;
+                native_nodes.get(token)?;
                 aliases.get(token).copied()
             }).collect::<Option<Vec<_>>>());
             if let Some(children) = children {
@@ -444,7 +457,7 @@ impl CompressionEvidence {
                 return Err(ProjectionError::Invalid("invalid semantic field ledger"));
             };
             let Some(field) = text(source, "field") else { continue };
-            let (Some(&id), Some(token)) = (ids.get(reference), text(refs, reference)) else { continue };
+            let (Some(&id), Some(token)) = (ids.get(reference), reference_tokens.get(reference).and_then(|token| token.as_str())) else { continue };
             let Some(native_fact) = by_token.get(token) else { continue };
             let value = native_fact.get("values").and_then(|values| text(values, key));
             let statuses = native_fact.get("fieldStatus");
@@ -454,9 +467,9 @@ impl CompressionEvidence {
                 evidence.complete_text.insert(FactKey { source: id, attribute: field.to_owned() });
             }
             let issues = issue_rows.get(token).map(Vec::as_slice).unwrap_or(&[]);
-            let Some(node) = native.get("nodes").and_then(|nodes| nodes.get(token)) else { continue };
+            let Some(&node) = native_nodes.get(token) else { continue };
             if !global_gap && key == "control_value.value"
-                && semantic.get("value_fields").and_then(|fields| text(fields, reference)) == Some(key)
+                && value_fields.get(reference).and_then(|field| field.as_str()) == Some(key)
                 && value_line(node, native_fact, source, issues)
             {
                 evidence.control_value_lines.insert(id);
@@ -477,15 +490,15 @@ impl CompressionEvidence {
                 evidence.complete_descriptions.insert(FactKey { source: id, attribute: field.to_owned() });
             }
         }
-        source_conflicts(&mut evidence, native, semantic, &aliases, ids, &issue_rows)?;
+        source_conflicts(&mut evidence, native, semantic, &aliases, ids, &issue_rows, &reference_tokens)?;
         if text(native, "backend") == Some("windows") && !global_gap {
             for (&token, &id) in &aliases {
-                let Some(node) = native.get("nodes").and_then(|nodes| nodes.get(token)) else { continue };
+                let Some(&node) = native_nodes.get(token) else { continue };
                 let Some(&child_id) = evidence.complete_children.get(&id).and_then(|children| {
                     if let [child] = children.as_slice() { Some(child) } else { None }
                 }) else { continue };
                 let Some((&child_token, _)) = aliases.iter().find(|(_, candidate)| **candidate == child_id) else { continue };
-                let Some(child) = native.get("nodes").and_then(|nodes| nodes.get(child_token)) else { continue };
+                let Some(&child) = native_nodes.get(child_token) else { continue };
                 if related.contains(token) || parent_count.get(child_token) != Some(&1)
                     || evidence.contested_sources.contains(&id) || evidence.contested_sources.contains(&child_id)
                     || node.get("actions") != child.get("actions")
@@ -497,7 +510,7 @@ impl CompressionEvidence {
             }
         }
         if !global_gap {
-            evidence.caption_sources = native_captions::capture(native, semantic, &aliases, &issue_rows);
+            evidence.caption_sources = native_captions::capture(native, semantic, &aliases, &issue_rows, &native_nodes, &value_fields);
         }
         Ok(evidence)
     }
