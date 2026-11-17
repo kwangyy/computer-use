@@ -180,7 +180,7 @@ namespace ComputerUse.Windows
         void Stop(long id)
         {
             if (execution == id)
-                SetExecution(0);
+                Reset();
             try
             {
                 Console.WriteLine(id.ToString(CultureInfo.InvariantCulture));

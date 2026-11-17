@@ -262,6 +262,8 @@ class ExecutionSession:
         if pending["id"] != execution_id or pending["userStopped"]:
             return
         pending["userStopped"] = True
+        if self._banner is not None:
+            self._banner.reset()
         pending["timer"].cancel()
         loop = asyncio.get_running_loop()
         pending["deadline"] = loop.time() + CLEANUP_TIMEOUT_SECONDS
