@@ -11,7 +11,7 @@ using System.Windows.Forms;
 namespace ComputerUse.Windows
 {
     // A separate MCP-host child. Its stdin carries the display name once, then
-    // execution IDs (zero disarms Esc), or "reset" to hide the session marker.
+    // execution IDs (zero keeps an idle marker), or "reset" to hide the marker.
     // EOF ends the MCP-owned child. Only an accepted Esc produces stdout.
     internal sealed class McpActivityBanner : IDisposable
     {
@@ -104,7 +104,7 @@ namespace ComputerUse.Windows
                     Console.Error.WriteLine("Windows activity banner could not enable Esc ({0}).", Marshal.GetLastWin32Error());
             }
             // Call completion and the next call retain the same visible HWND
-            // and artwork. The keyboard hook passes Esc through while idle.
+            // and artwork. Idle Esc dismisses it without cancelling a call.
             if (image != null && hadHook == (hook != IntPtr.Zero))
             {
                 Paint();
@@ -124,7 +124,7 @@ namespace ComputerUse.Windows
         void Paint()
         {
             if (image != null && window.Present(image, position, 255, IntPtr.Zero))
-                acceptsStop = execution != 0 && hook != IntPtr.Zero;
+                acceptsStop = hook != IntPtr.Zero;
         }
 
         void Reset()
