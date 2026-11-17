@@ -21,6 +21,7 @@ from mcp.server.stdio import stdio_server
 
 from .instructions import CODE_DESCRIPTION, DESCRIPTION, RESET_DESCRIPTION, TITLE_DESCRIPTION
 from .session import ExecutionSession
+from .windows_banner import DEFAULT_AGENT_DISPLAY_NAME, WindowsExecutionBanner
 
 _input = obj(dict(title=string(min=1, max=200).optional(), code=string(min=1, max=65536)))
 _empty = obj({})
@@ -46,10 +47,11 @@ def _supports(client_capabilities, key, version):
 
 
 class ComputerUseServer:
-    def __init__(self, *, allow_global_input=True):
+    def __init__(self, *, allow_global_input=True, agent_display_name=DEFAULT_AGENT_DISPLAY_NAME):
         if allow_global_input is not True and allow_global_input is not False:
             raise TypeError("allow_global_input must be a boolean")
         self.allow_global_input = allow_global_input
+        self._banner = WindowsExecutionBanner(agent_display_name) if sys.platform == "win32" else None
         self.server = Server("computer-use", version=SDK_VERSION)
         self.session = None
 
@@ -136,6 +138,7 @@ class ComputerUseServer:
                     _supports(experimental, "computer-use-demo-foreground", 1)
                     and experimental["computer-use-demo-foreground"].get("enabled") is True,
                     allow_global_input=self.allow_global_input,
+                    banner=self._banner,
                 )
             metadata = context.meta.model_dump() if context.meta is not None else {}
             progress_token = metadata.get("progressToken")
@@ -159,8 +162,12 @@ class ComputerUseServer:
             return types.CallToolResult.model_validate(result)
 
     async def close(self):
-        if self.session is not None:
-            await asyncio.shield(self.session.close())
+        try:
+            if self.session is not None:
+                await asyncio.shield(self.session.close())
+        finally:
+            if self._banner is not None:
+                await self._banner.close()
 
     async def run(self):
         try:
@@ -176,8 +183,8 @@ class ComputerUseServer:
             await self.close()
 
 
-async def main(*, allow_global_input=True):
-    host = ComputerUseServer(allow_global_input=allow_global_input)
+async def main(*, allow_global_input=True, agent_display_name=DEFAULT_AGENT_DISPLAY_NAME):
+    host = ComputerUseServer(allow_global_input=allow_global_input, agent_display_name=agent_display_name)
     task = asyncio.current_task()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -199,8 +206,13 @@ def cli(argv=None):
         default=True,
         help="Allow global mouse and keyboard input (default: enabled); qualified low-impact routes remain preferred",
     )
+    display = parser.add_argument_group("optional display settings")
+    display.add_argument(
+        "--agent-display-name", default=DEFAULT_AGENT_DISPLAY_NAME,
+        help="Name shown in the Windows activity banner (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
-    asyncio.run(main(allow_global_input=args.allow_global_input))
+    asyncio.run(main(allow_global_input=args.allow_global_input, agent_display_name=args.agent_display_name))
 
 
 if __name__ == "__main__":

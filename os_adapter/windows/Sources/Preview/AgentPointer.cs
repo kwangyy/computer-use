@@ -37,7 +37,7 @@ namespace ComputerUse.Windows
         double beganAt, endedAt, pulseAt;
         bool active, dragging, selectionAimed;
         volatile bool stopping;
-        volatile AgentPointerWindow overlay;
+        volatile DesktopDecorationWindow overlay;
         internal AgentPointer()
         {
             if (!enabled)
@@ -403,7 +403,7 @@ namespace ComputerUse.Windows
             IDisposable isolation;
             try
             {
-                isolation = AgentPointerWindow.IsolateCaptures();
+                isolation = DesktopDecorationWindow.IsolateCaptures();
             }
             catch
             {
@@ -442,11 +442,11 @@ namespace ComputerUse.Windows
 
         void RenderLoop()
         {
-            AgentPointerWindow window = null;
+            DesktopDecorationWindow window = null;
             System.Windows.Forms.Timer timer = null;
             try
             {
-                window = new AgentPointerWindow();
+                window = new DesktopDecorationWindow(DesktopDecorationWindow.PointerTitle);
                 overlay = window;
                 var clock = new AgentPointerVisualState();
                 bool initialized = false, wasActive = false;
@@ -455,7 +455,7 @@ namespace ComputerUse.Windows
                 PointF from = PointF.Empty, goal = PointF.Empty;
                 double movedAt = 0, moveDuration = 0, appearedAt = 0, pressedAt = 0;
                 int count = 1;
-                bool reduced = AgentPointerWindow.ReducedMotion();
+                bool reduced = DesktopDecorationWindow.ReducedMotion();
                 timer = new System.Windows.Forms.Timer
                 {
                     Interval = 16
@@ -550,7 +550,7 @@ namespace ComputerUse.Windows
                             return;
                         }
 
-                        float scale = AgentPointerWindow.Scale(point);
+                        float scale = DesktopDecorationWindow.Scale(point);
                         var bounds = AgentPointerArtwork.Bounds;
                         var position = new Point((int)Math.Floor(point.X + bounds.Left * scale), (int)Math.Floor(point.Y + bounds.Top * scale));
                         int width = (int)Math.Ceiling(point.X + bounds.Right * scale - position.X), height = (int)Math.Ceiling(point.Y + bounds.Bottom * scale - position.Y);

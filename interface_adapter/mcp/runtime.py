@@ -763,7 +763,10 @@ class Runtime:
             _meta={"computer-use": {"receipts": [receipt_evidence(item) for item in run["actions"].receipts()]}},
         )
         message = None
-        if error is not None:
+        if isinstance(error, _ExecutionCancelled):
+            # The supervising host supplies the user-facing stop notice.
+            result["isError"] = True
+        elif error is not None:
             message = type(error).__name__ + ": " + str(error)
             if isinstance(error, ComputerUseError):
                 failure = {"code": error.code, "target": error.target[:256], "effect": error.effect}
@@ -859,7 +862,7 @@ class Runtime:
                 continue
         await settling
 
-    async def execute(self, message):
+    async def execute(self, message, *, cancellation=None):
         if self.closed:
             result = dict(content=[dict(type="text", text="Execution runtime is closed.")], isError=True)
             self.send(result)
@@ -894,11 +897,13 @@ class Runtime:
             preparedDeliveries={},
             presentations={},
             deliveredObservations=[],
-            cancellation=ExecutionCancellation(),
+            cancellation=ExecutionCancellation() if cancellation is None else cancellation,
         )
         token = _runs.set(run)
         try:
             try:
+                if run["cancellation"].cancelled.is_set():
+                    raise _ExecutionCancelled()
                 compiled = compile(
                     code + "\n",
                     "computer-use-agent.py",
@@ -992,15 +997,21 @@ async def main(argv=None):
         loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(stop()))
     except RuntimeError:
         pass
-    current = None
+    current = execution_id = cancellation = None
     try:
         while True:
             message = await read_message(reader, protocol=protocol)
             if message is None:
                 break
+            if "cancelExecutionId" in message:
+                if current is not None and not current.done() and message["cancelExecutionId"] == execution_id:
+                    cancellation.cancel()
+                continue
             if current is not None and not current.done():
                 raise RuntimeError("Worker received concurrent executions")
-            current = asyncio.create_task(runtime.execute(message))
+            execution_id = message["executionId"]
+            cancellation = ExecutionCancellation()
+            current = asyncio.create_task(runtime.execute(message, cancellation=cancellation))
         if current is not None and not current.done():
             current.cancel()
     finally:

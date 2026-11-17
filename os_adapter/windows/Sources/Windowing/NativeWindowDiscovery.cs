@@ -43,7 +43,7 @@ namespace ComputerUse.Windows
 
         internal static bool Visible(IntPtr handle)
         {
-            if (handle == IntPtr.Zero || !Native.IsWindow(handle) || !Native.IsWindowVisible(handle) || AgentPointerWindow.IsDecoration(handle))
+            if (handle == IntPtr.Zero || !Native.IsWindow(handle) || !Native.IsWindowVisible(handle) || DesktopDecorationWindow.IsDecoration(handle))
                 return false;
             int cloaked;
             return Native.DwmGetWindowAttribute(handle, 14, out cloaked, 4) != 0 || cloaked == 0;

@@ -196,7 +196,7 @@ namespace ComputerUse.Windows
         static readonly Dictionary<IntPtr, long> generations = new Dictionary<IntPtr, long>();
         internal static volatile bool GenerationTrackingAvailable;
         static EventProc destroy;
-        internal static void Initialize()
+        internal static void InitializeDpiAwareness()
         {
             try
             {
@@ -206,7 +206,11 @@ namespace ComputerUse.Windows
             {
                 SetProcessDPIAware();
             }
+        }
 
+        internal static void Initialize()
+        {
+            InitializeDpiAwareness();
             var ready = new ManualResetEvent(false);
             var thread = new Thread(() =>
                                     {
@@ -420,7 +424,7 @@ namespace ComputerUse.Windows
                 (h, p) =>
                 {
                     int cloaked;
-                    if (IsWindowVisible(h) && !AgentPointerWindow.IsDecoration(h) &&
+                    if (IsWindowVisible(h) && !DesktopDecorationWindow.IsDecoration(h) &&
                         (DwmGetWindowAttribute(h, 14, out cloaked, 4) != 0 || cloaked == 0))
                         result.Add(h);
                     return true;

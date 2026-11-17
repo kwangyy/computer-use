@@ -54,8 +54,12 @@ Agent 需支持 MCP 工具调用；要使用截图，还需客户端和模型支
 Windows 对应路径为 `C:/absolute/path/to/computer-use/.venv/Scripts/computer-use-mcp.exe`。
 `PYTHONSAFEPATH=1` 用于避免宿主工作目录中的同名文件夹遮蔽 SDK 包。
 
+Windows 上，脚本开始操作桌面后，屏幕顶部会显示「Jiuwen 正在使用你的电脑…」。
+集成方可在 MCP 启动配置的 `args` 中选填 `["--agent-display-name", "我的助手"]`，替换提示条上的名称。
+按 `Esc` 停止当前工具调用。调用会直接返回用户终止信息和已经产生的输出，进度中的 `stopReason` 为 `user_stopped`。
+
 如果客户端提供连接器表单（例如 WorkSwarm），选择 **stdio** 类型，名称填写 `computer-use`，
-命令填写上述可执行文件路径，参数留空，并添加环境变量 `PYTHONSAFEPATH=1`。
+命令填写上述可执行文件路径，按需填写参数，并添加环境变量 `PYTHONSAFEPATH=1`。
 其配置存储位置和启用方式由客户端管理。
 
 需要手动启动服务调试时，也可在仓库根目录运行：

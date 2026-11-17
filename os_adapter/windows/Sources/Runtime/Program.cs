@@ -45,15 +45,17 @@ namespace ComputerUse.Windows
                 return NativeWindowDiscovery.RunWorker();
             if (args.Length == 1 && args[0] == "--application-name-worker")
                 return NativeApplicationNames.RunWorker();
-            Native.Initialize();
-            if (args.Contains("--check-permissions") || args.Contains("--request-permissions"))
-            {
-                Console.WriteLine(Wire.Json(NativeInputAccess.Permissions()));
-                return 0;
-            }
-
             try
             {
+                if (args.Length == 1 && args[0] == "--mcp-activity-banner")
+                    return McpActivityBanner.Run();
+                Native.Initialize();
+                if (args.Contains("--check-permissions") || args.Contains("--request-permissions"))
+                {
+                    Console.WriteLine(Wire.Json(NativeInputAccess.Permissions()));
+                    return 0;
+                }
+
                 if (args.Contains("--native-worker"))
                 {
                     string line = Console.ReadLine();
