@@ -15,6 +15,7 @@ import signal
 import sys
 from collections import deque
 from contextvars import ContextVar
+from dataclasses import replace
 
 from computer_use import Computer
 from computer_use.client.execution import ExecutionCancellation, SessionExecutor, execution_scope
@@ -38,7 +39,7 @@ from computer_use.client.images import (
     require_image_delivery,
 )
 from computer_use.client.result_presentation import result_receipt, text_source_label
-from computer_use.diagnostics import _register_observation_diagnostic
+from computer_use.diagnostics import _register_observation_diagnostic, _register_pipeline_transport
 from computer_use.errors import ComputerUseError, confirmed_no_requested_input
 from computer_use.identity import Record, WeakIdentityMap
 from computer_use.interaction.read.presentation.actions.presentation import ActionPresentation
@@ -62,8 +63,9 @@ from .image_presentation import PresentationImages
 from .output import ObservationOutput, ObservationPresenter, OutputBuffer
 from .receipts import receipt_evidence
 from .receipts import receipt_summary as _receipt_summary
+from .window_images import independent_window_images
 from .worker_lifecycle import READY_ENV
-from .worker_transport import WorkerMessageWriter, consume_protocol, read_message
+from .worker_transport import PIPELINE_TAG_ENV, WorkerMessageWriter, consume_protocol, read_message
 
 _runs = ContextVar("computer_use_execution", default=None)
 
@@ -74,9 +76,10 @@ def _window_closed_without_input(error: ComputerUseError) -> bool:
 
 
 class Runtime:
-    def __init__(self, send, computer_factory=Computer, *, send_observation=None):
+    def __init__(self, send, computer_factory=Computer, *, send_observation=None, send_pipeline=None):
         self.send, self.computer_factory = send, computer_factory
         self.send_observation = send_observation
+        self.send_pipeline = send_pipeline
         self.executor = SessionExecutor(loop=asyncio.get_running_loop())
         self.presenter = ObservationPresenter()
         self.presentation_images = PresentationImages()
@@ -91,6 +94,8 @@ class Runtime:
         set_diagnostic_handler(handler)
         if send_observation is not None:
             _register_observation_diagnostic(handler, handler)
+        if send_pipeline is not None:
+            _register_pipeline_transport(handler, self.pipeline_transport)
         set_action_handler(self.action)
         set_text_page_handler(self.text_page)
         set_observation_handler(self.observation)
@@ -117,6 +122,13 @@ class Runtime:
                 pending.set_result(None)
 
         return done
+
+    def pipeline_transport(self, event):
+        """Send primitive traces only in the ordinary diagnostic owner context."""
+        if not self.executor.is_owner:
+            return False
+        run = _runs.get()
+        return self.send_pipeline(event, run["id"] if run is not None else None)
 
     def diagnostic(self, event, observation_json=None):
         if not self.executor.is_owner:
@@ -254,9 +266,10 @@ class Runtime:
         if delivery is not None:
             # Reserve the standalone caption because a deferred tree no
             # longer supplies the window and coordinate context.
-            label = image_label(delivery.source, False, delivery.coordinates)
             index = len(run["imageOutputs"]) + 1
-            caption_bytes = len(utf8(f"Image {run['id']}.{index}\n{label}"))
+            for offset, member in enumerate(delivery.members or (delivery,)):
+                label = image_label(member.source, False, member.coordinates)
+                caption_bytes += len(utf8(f"Image {run['id']}.{index + offset}\n{label}"))
         remaining = available - caption_bytes
         deferred = len(utf8(text)) > remaining
         if deferred:
@@ -444,6 +457,8 @@ class Runtime:
             # Reprinting this exact public view retains its original source and
             # inverse. It cannot adopt the last image's dimensions or binding.
             run["preparedDeliveries"][id(presented[1])] = presented
+            for member in presented[5]:
+                run["preparedDeliveries"][id(member[1])] = member
             return presented[1]
         fingerprint = hashlib.sha256(png).digest()
         cached = run["preparedImages"].get(id(png))
@@ -456,12 +471,16 @@ class Runtime:
             if budget is not None:
                 budget.checkpoint()
             delivery = prepare_image(png)
+            members = independent_window_images(png)
+            if members:
+                delivery = replace(delivery, members=tuple(self.prepared_image(member) for member in members))
             cached = (
                 fingerprint,
                 delivery,
                 base64.b64encode(delivery.png).decode("ascii"),
                 image_metadata(png),
                 image_output_scope(png),
+                tuple(run["preparedDeliveries"][id(member)] for member in delivery.members),
             )
             run["preparedImages"][id(png)] = cached
             # Slots retain their original encoding even if the caller mutates
@@ -485,7 +504,7 @@ class Runtime:
         if view is not None:
             presented = dict(observation, state=original, document=view.document, sourceState=original)
         elif document is not None and delivery is not None:
-            projected = project_document(document, delivery.coordinates)
+            projected = project_document(document, delivery.coordinates, independent_windows=bool(delivery.members))
             screenshot = self.presentation_images.create(run["preparedDeliveries"][id(delivery)])
             if isinstance(original, LazyObservation):
                 bind_observation_presentation(original, projected, screenshot)
@@ -589,6 +608,10 @@ class Runtime:
         self.emit_image(delivery)
 
     def emit_image(self, delivery, *, captured_after_action=None):
+        if delivery.members:
+            for member in delivery.members:
+                self.emit_image(member, captured_after_action=captured_after_action)
+            return
         run = _runs.get()
         png = delivery.source
         prepared = run["preparedDeliveries"][id(delivery)] if run is not None else None
@@ -740,7 +763,10 @@ class Runtime:
             _meta={"computer-use": {"receipts": [receipt_evidence(item) for item in run["actions"].receipts()]}},
         )
         message = None
-        if error is not None:
+        if isinstance(error, _ExecutionCancelled):
+            # The supervising host supplies the user-facing stop notice.
+            result["isError"] = True
+        elif error is not None:
             message = type(error).__name__ + ": " + str(error)
             if isinstance(error, ComputerUseError):
                 failure = {"code": error.code, "target": error.target[:256], "effect": error.effect}
@@ -836,7 +862,7 @@ class Runtime:
                 continue
         await settling
 
-    async def execute(self, message):
+    async def execute(self, message, *, cancellation=None):
         if self.closed:
             result = dict(content=[dict(type="text", text="Execution runtime is closed.")], isError=True)
             self.send(result)
@@ -871,11 +897,13 @@ class Runtime:
             preparedDeliveries={},
             presentations={},
             deliveredObservations=[],
-            cancellation=ExecutionCancellation(),
+            cancellation=ExecutionCancellation() if cancellation is None else cancellation,
         )
         token = _runs.set(run)
         try:
             try:
+                if run["cancellation"].cancelled.is_set():
+                    raise _ExecutionCancelled()
                 compiled = compile(
                     code + "\n",
                     "computer-use-agent.py",
@@ -942,12 +970,17 @@ async def main(argv=None):
 
     protocol = consume_protocol()
     ready_requested = os.environ.pop(READY_ENV, None) == "1"
+    canonical_pipeline = os.environ.pop(PIPELINE_TAG_ENV, None) == "1"
     reader, writer = await worker_connection()
 
-    messages = WorkerMessageWriter(writer, protocol=protocol)
+    messages = WorkerMessageWriter(writer, protocol=protocol, canonical_pipeline=canonical_pipeline)
     if not args.allow_global_input:
         disable_global_input_for_process()
-    runtime = Runtime(messages.send, send_observation=messages.send_observation)
+    runtime = Runtime(
+        messages.send,
+        send_observation=messages.send_observation,
+        send_pipeline=messages.send_pipeline if canonical_pipeline else None,
+    )
     sys.stdout = sys.stderr = ConsoleWriter(runtime)
     builtins.print = runtime.print
     if ready_requested:
@@ -964,15 +997,21 @@ async def main(argv=None):
         loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(stop()))
     except RuntimeError:
         pass
-    current = None
+    current = execution_id = cancellation = None
     try:
         while True:
             message = await read_message(reader, protocol=protocol)
             if message is None:
                 break
+            if "cancelExecutionId" in message:
+                if current is not None and not current.done() and message["cancelExecutionId"] == execution_id:
+                    cancellation.cancel()
+                continue
             if current is not None and not current.done():
                 raise RuntimeError("Worker received concurrent executions")
-            current = asyncio.create_task(runtime.execute(message))
+            execution_id = message["executionId"]
+            cancellation = ExecutionCancellation()
+            current = asyncio.create_task(runtime.execute(message, cancellation=cancellation))
         if current is not None and not current.done():
             current.cancel()
     finally:

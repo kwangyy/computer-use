@@ -23,9 +23,10 @@ class ImageDelivery:
     source: bytes | bytearray | memoryview
     png: bytes
     coordinates: ImageCoordinates
+    members: tuple["ImageDelivery", ...] = ()
 
 
-def project_document(document, coordinates: ImageCoordinates):
+def project_document(document, coordinates: ImageCoordinates, *, independent_windows=False):
     """Project only image-space presentation facts; preserve source identity.
 
     Desktop facts are structured all the way to this delivery boundary. Never
@@ -38,6 +39,10 @@ def project_document(document, coordinates: ImageCoordinates):
 
     def project(value):
         if isinstance(value, DisplayText):
+            if independent_windows and value.kind == "image_header":
+                return DisplayText("literal", (
+                    "Screenshots: separate window images. Use each image's own pixels and caption window reference.",
+                ))
             if value.kind == "desktop":
                 desktop, *references = value.values
                 canvas = desktop["canvas"]

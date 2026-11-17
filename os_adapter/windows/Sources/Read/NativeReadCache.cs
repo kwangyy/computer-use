@@ -52,21 +52,29 @@ namespace ComputerUse.Windows
                 (first, second) =>
                     UiaClient.Call(() => UiaClient.Current.CompareElements(first.Native, second.Native)) != 0,
                 note);
+            cachedProperties = RequestedProperties(fields);
+            elementCache = UiaClient.Cache(cachedProperties.Concat(UiaClient.Patterns.Select(p => p.Available)));
+        }
+
+        internal static HashSet<int> RequestedProperties(IEnumerable<string> fields)
+        {
             var requested = new HashSet<int> { AutomationElement.RuntimeIdProperty.Id,
                                                AutomationElement.NativeWindowHandleProperty.Id,
                                                AutomationElement.IsPasswordProperty.Id };
             foreach (string name in fields)
             {
                 AutomationProperty p;
-                if (NativeReadSchema.Properties.TryGetValue(name, out p))
+                if (NativeReadSchema.Properties.TryGetValue(name, out p) ||
+                    NativeReadSchema.TableRelations.TryGetValue(name, out p))
                     requested.Add(p.Id);
                 int id;
-                if (NativeReadSchema.ReadingProperties.TryGetValue(name, out id))
+                if (NativeReadSchema.ReadingProperties.TryGetValue(name, out id) ||
+                    NativeReadSchema.ReadingRelations.TryGetValue(name, out id))
                     requested.Add(id);
+                if (name == "LabeledBy")
+                    requested.Add(AutomationElement.LabeledByProperty.Id);
             }
-
-            cachedProperties = requested;
-            elementCache = UiaClient.Cache(requested.Concat(UiaClient.Patterns.Select(p => p.Available)));
+            return requested;
         }
 
         internal UiaElement Snapshot(UiaElement element)
@@ -104,8 +112,9 @@ namespace ComputerUse.Windows
             var snapshot = Snapshot(element);
             check();
             object value;
-            // Relations are not inserted into the property cache: their native
-            // objects and scope must be handled explicitly by the collector.
+            // Cached relation values retain their actual native objects. The
+            // collector still applies the same identity and scope handling;
+            // caching a property never grants an object input authority.
             if (uncached.Contains(Key(element)) || !cachedProperties.Contains(property))
                 value = element.GetCurrentPropertyValue(property, true, UnavailableArrayMember);
             else
@@ -143,35 +152,35 @@ namespace ComputerUse.Windows
         }
         internal NativeReadChildren Children(UiaElement element)
         {
-            UiaElement[] children = null;
-            bool fetched = false;
-            try
-            {
-                check();
-                var cache = elementCache.Clone();
-                cache.TreeScope = (UIA.TreeScope)2;
-                children = element.Snapshot(cache).ReadCachedChildren(UnavailableArrayMember);
-                check();
-                fetched = true;
-            }
-            catch (Exception error)
-            {
-                check();
-                note("UIA children cache unavailable; bounded RawViewWalker used: " + error.Message);
-            }
-            // An empty cache is not evidence of provider consistency. Probe
-            // only the first Raw View child; select the walker only when this
-            // supplies conflicting evidence, never perform two full scans.
-            var route = NativeReadChildRoutes.Resolve(fetched, children,
-                                                      () =>
-                                                      {
-                                                          check();
-                                                          var first = UiaClient.FirstChild(element);
-                                                          check();
-                                                          return first;
-                                                      });
+            var route = NativeReadChildRoutes.Inspect(
+                () =>
+                {
+                    check();
+                    var first = UiaClient.FirstChild(element);
+                    check();
+                    return first;
+                },
+                () =>
+                {
+                    check();
+                    var cache = elementCache.Clone();
+                    cache.TreeScope = (UIA.TreeScope)2;
+                    var children = element.Snapshot(cache).ReadCachedChildren(UnavailableArrayMember);
+                    check();
+                    return children;
+                },
+                error =>
+                {
+                    check();
+                    note("UIA first-child probe unavailable; cached children used: " + error.Message);
+                },
+                error =>
+                {
+                    check();
+                    note("UIA children cache unavailable; bounded RawViewWalker used: " + error.Message);
+                });
             if (route.UseSnapshot)
-                return new NativeReadChildren(CachedChildren(children), true);
+                return new NativeReadChildren(CachedChildren(route.Cached), true);
             if (route.ConflictingEmptyCache)
                 note(
                     "UIA cached children were empty but RawViewWalker exposed a child; the walker relation is sampled separately and cache completeness is unknown.");

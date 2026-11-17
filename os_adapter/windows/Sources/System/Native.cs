@@ -196,7 +196,7 @@ namespace ComputerUse.Windows
         static readonly Dictionary<IntPtr, long> generations = new Dictionary<IntPtr, long>();
         internal static volatile bool GenerationTrackingAvailable;
         static EventProc destroy;
-        internal static void Initialize()
+        internal static void InitializeDpiAwareness()
         {
             try
             {
@@ -206,7 +206,11 @@ namespace ComputerUse.Windows
             {
                 SetProcessDPIAware();
             }
+        }
 
+        internal static void Initialize()
+        {
+            InitializeDpiAwareness();
             var ready = new ManualResetEvent(false);
             var thread = new Thread(() =>
                                     {
@@ -420,7 +424,7 @@ namespace ComputerUse.Windows
                 (h, p) =>
                 {
                     int cloaked;
-                    if (IsWindowVisible(h) && !AgentPointerWindow.IsDecoration(h) &&
+                    if (IsWindowVisible(h) && !DesktopDecorationWindow.IsDecoration(h) &&
                         (DwmGetWindowAttribute(h, 14, out cloaked, 4) != 0 || cloaked == 0))
                         result.Add(h);
                     return true;
@@ -445,7 +449,7 @@ namespace ComputerUse.Windows
             window.Validate();
             var h = window.Handle;
             if (!Interactive())
-                throw new Failure("desktop_unavailable", "input requires the unlocked interactive desktop");
+                throw Failure.DesktopUnavailable("input requires the unlocked interactive desktop");
             if (GetForegroundWindow() == h && !IsIconic(h))
                 return;
             if (NoActivate(h))

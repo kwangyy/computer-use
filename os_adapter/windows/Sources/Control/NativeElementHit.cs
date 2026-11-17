@@ -20,8 +20,8 @@ namespace ComputerUse.Windows
     }
 
     // A UIA observation is separate from HWND routing and SendInput progress.
-    // Only a proven different branch conflicts; coarse/missing provider data
-    // retains the existing geometry route with its uncertainty visible.
+    // Provider hit identity is diagnostic: even a different control can be
+    // an underlying widget beneath a visible same-HWND popup.
     internal sealed class NativeElementHit
     {
         internal readonly NativeElementHitKind Kind;
@@ -37,89 +37,6 @@ namespace ComputerUse.Windows
             get
             {
                 return Kind == NativeElementHitKind.Target || Kind == NativeElementHitKind.Descendant;
-            }
-        }
-
-        internal bool Conflicts
-        {
-            get
-            {
-                return Kind == NativeElementHitKind.OtherControl;
-            }
-        }
-
-        internal bool Ready(bool nativeReady, bool requiresConfirmed = false)
-        {
-            return nativeReady && !Conflicts && (!requiresConfirmed || Confirmed);
-        }
-
-        internal sealed class PointChoice
-        {
-            internal readonly NativePointerPoint Point;
-            internal readonly NativeElementHit Hit;
-            internal readonly bool RequiresConfirmed;
-            internal PointChoice(NativePointerPoint point, NativeElementHit hit, bool requiresConfirmed = false)
-            {
-                Point = point;
-                Hit = hit;
-                RequiresConfirmed = requiresConfirmed;
-            }
-        }
-
-        internal static PointChoice SelectPoint(NativePointerPoint primary, IEnumerable<NativePointerPoint> alternatives, Func<NativePointerPoint, NativeElementHit> query, Func<bool> canContinue)
-        {
-            var first = new PointChoice(primary, query(primary));
-            if (!first.Hit.Conflicts)
-                return first;
-            foreach (var point in alternatives)
-            {
-                if (!canContinue())
-                    break;
-                var hit = query(point);
-                // Never turn an unconfirmed new point into another geometry
-                // fallback, and never send test clicks to search for an effect.
-                if (hit.Confirmed)
-                    return new PointChoice(point, hit, true);
-            }
-
-            return first;
-        }
-
-        internal static IEnumerable<NativePointerPoint> Alternatives(NativePointerPoint primary, IEnumerable<NativeCaptureGeometry> areas)
-        {
-            var seen = new HashSet<string>
-            {
-                primary.X + ":" + primary.Y
-            };
-            int remaining = 9;
-            foreach (var b in areas)
-            {
-                if (b == null)
-                    continue;
-                int dx = Math.Max(0, Math.Min(4, (b.NativeWidth - 1) / 4)), dy = Math.Max(0, Math.Min(4, (b.NativeHeight - 1) / 4));
-                int left = b.X + dx, right = b.X + b.NativeWidth - 1 - dx, top = b.Y + dy, bottom = b.Y + b.NativeHeight - 1 - dy;
-                int x = b.X + b.NativeWidth / 2, y = b.Y + b.NativeHeight / 2;
-                foreach (var point in new[]
-                {
-                    new NativePointerPoint(x, y),
-                    new NativePointerPoint(left, y),
-                    new NativePointerPoint(right, y),
-                    new NativePointerPoint(x, top),
-                    new NativePointerPoint(x, bottom),
-                    new NativePointerPoint(left, top),
-                    new NativePointerPoint(right, top),
-                    new NativePointerPoint(left, bottom),
-                    new NativePointerPoint(right, bottom)
-                }
-
-                )
-                {
-                    if (!seen.Add(point.X + ":" + point.Y))
-                        continue;
-                    yield return point;
-                    if (--remaining == 0)
-                        yield break;
-                }
             }
         }
 
@@ -240,7 +157,7 @@ namespace ComputerUse.Windows
         {
             if (Confirmed)
                 return "Pointer click submitted at the original element's point; UIA confirmed the target or its descendant. Read to verify its effect.";
-            string reason = Kind == NativeElementHitKind.Ancestor ? "the provider returned only an ancestor" : Kind == NativeElementHitKind.QueryFailed ? "the hit query failed" + (Error.HasValue ? " (0x" + unchecked((uint)Error.Value).ToString("X8") + ")" : "") : Kind == NativeElementHitKind.NoElement ? "the provider returned no element" : Kind == NativeElementHitKind.OutsideScope ? "the reported element's original-window ancestry was not confirmed" : Kind == NativeElementHitKind.OtherBranch ? "the provider returned a different generic branch without a confirmed control receiver" : Kind == NativeElementHitKind.Incomplete ? "the provider's hit ancestry was incomplete" : "UIA hit data was unavailable";
+            string reason = Kind == NativeElementHitKind.Ancestor ? "the provider returned only an ancestor" : Kind == NativeElementHitKind.QueryFailed ? "the hit query failed" + (Error.HasValue ? " (0x" + unchecked((uint)Error.Value).ToString("X8") + ")" : "") : Kind == NativeElementHitKind.NoElement ? "the provider returned no element" : Kind == NativeElementHitKind.OutsideScope ? "the reported element's original-window ancestry was not confirmed" : Kind == NativeElementHitKind.OtherControl ? "the provider reported a different control in the same native window; visual hit is unconfirmed" : Kind == NativeElementHitKind.OtherBranch ? "the provider returned a different generic branch without a confirmed control receiver" : Kind == NativeElementHitKind.Incomplete ? "the provider's hit ancestry was incomplete" : "UIA hit data was unavailable";
             return "Pointer click submitted within the original element's current visible bounds; UIA element hit unconfirmed: " + reason + ". Native window routing and original element identity/geometry were revalidated. Read to verify the actual effect.";
         }
     }

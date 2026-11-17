@@ -14,8 +14,9 @@ namespace ComputerUse.Windows
         internal static void Require(bool allowed)
         {
             if (!allowed)
-                throw new Failure("permission_required", "this route requires global mouse or keyboard input",
-                                  "request explicit global input authorization before using this route");
+                throw Failure.UserAssistance("permission_required", "this route requires global mouse or keyboard input",
+                    "Ask the user to authorize global input in the host/session, or complete this step manually. " +
+                    "Do not retry this blocked route until authorization changes; then read the target again before continuing.");
         }
     }
 }

@@ -69,7 +69,7 @@ fn excerpt(value: &str, limit: usize) -> (&str, bool) {
     value.char_indices().nth(limit).map_or((value, false), |(index, _)| (&value[..index], true))
 }
 
-fn relation_summaries(source: &Sources<'_>) -> Result<Vec<String>> {
+fn relation_summaries(source: &Sources<'_>, omit_empty: bool) -> Result<Vec<String>> {
     let mut result = Vec::new();
     let mut flows = Groups::<&str, &str>::default();
     let mut unsafe_order = false;
@@ -82,6 +82,12 @@ fn relation_summaries(source: &Sources<'_>) -> Result<Vec<String>> {
         let partial = state != "complete" || certainty != "confirmed";
         match field(relation, "kind") {
             Some("described_by") => {
+                if omit_empty && !partial && seq(relation.get("targets")).is_empty()
+                    && relation.get("total") == Some(&Value::Int(0))
+                    && relation.get("offset").is_none_or(|value| value == &Value::Int(0))
+                    && field(relation, "enumeration").is_none_or(|value| value == "enumerated")
+                    && ["cursor", "issues", "unavailablePositions"].iter().all(|key| !truthy(relation.get(key)))
+                { continue; }
                 let mut descriptions = Vec::new();
                 for target in seq(relation.get("targets")) {
                     let token = target.as_str().ok_or(TextError::Invalid("described target"))?;
@@ -283,6 +289,7 @@ pub(super) struct Selection {
     interval: Option<(i64, i64)>,
     group: Option<(String, String)>,
     inactive: bool,
+    empty_unfocused: bool,
 }
 
 impl Selection {
@@ -414,9 +421,17 @@ pub(super) fn selection_plan(source: &Sources<'_>) -> Result<Vec<Selection>> {
             && (values.get("text.caret").is_none() || values.get("text.caret_active") == Some(&Value::Bool(false)))
             && !truthy(values.get("text.selected_text")) && spans[0].get("collapsed") == Some(&Value::Bool(true)) && !has_text(&spans[0]);
         let compact = selection_suffix(spans, state, total, unit)?;
+        let empty_unfocused = clean && spans.is_empty() && total == Some(&Value::Int(0))
+            && !uncertain_capture && !uncertain_sources.contains(token)
+            && !matches!(field(values, "role"), None | Some("unknown" | "text_field" | "text_area" | "combo_box" | "document" | "web_area"))
+            && !inputs.contains(reference) && values.get("states.editable") != Some(&Value::Bool(true))
+            && values.get("states.focused") == Some(&Value::Bool(false)) && !focus_issues
+            && !statuses.iter().any(|(key, _)| key == "role" || key == "states.editable")
+            && values.get("text.caret").is_none() && values.get("text.caret_active") != Some(&Value::Bool(true))
+            && !truthy(values.get("text.selected_text"));
         result.push(Selection {
             reference: reference.to_owned(), source: token.to_owned(), unit: unit.map(str::to_owned), read_state: state.to_owned(),
-            spans: spans.to_vec(), coverage, compact, detailed, interval, group, inactive,
+            spans: spans.to_vec(), coverage, compact, detailed, interval, group, inactive, empty_unfocused,
         });
     }
     Ok(result)
@@ -597,7 +612,8 @@ fn unspecified_body(row: &Value, facts: &Value) -> bool {
 
 pub(super) fn read(source: &Sources<'_>, selections: &[Selection], compact: bool, concise: bool) -> Result<Vec<String>> {
     let facts = &source.request.snapshot.facts;
-    let mut output = relation_summaries(source)?;
+    let windows_compact = compact && field(&source.request.snapshot.observation, "backend") == Some("windows");
+    let mut output = relation_summaries(source, windows_compact)?;
     if !compact { output.extend(geometry_summaries(source)?); }
     let by_ref: HashMap<_, _> = selections.iter().map(|entry| (entry.reference.as_str(), entry)).collect();
     for relation in seq(facts.get("relations")) {
@@ -630,7 +646,8 @@ pub(super) fn read(source: &Sources<'_>, selections: &[Selection], compact: bool
                 else { format!("Document text of {reference}: {state}; control values are recorded separately.") });
         }
         if values.get("text.source").is_none() { continue; }
-        if let Some(selection) = by_ref.get(reference).filter(|entry| !compact || entry.group.is_none() && !(concise && entry.inactive)) {
+        if let Some(selection) = by_ref.get(reference).filter(|entry| !compact || entry.group.is_none()
+            && !(concise && entry.inactive) && !(windows_compact && entry.empty_unfocused)) {
             output.push(if compact { selection.statement(reference, concise) } else { selection.detail() });
         }
         let active = values.get("text.caret_active");

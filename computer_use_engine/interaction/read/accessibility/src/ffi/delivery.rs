@@ -40,10 +40,17 @@ pub(super) struct NativeRendered {
 }
 
 pub(super) fn comparison(
-    compact: &CompactSnapshot, scope: Vec<Option<String>>, indent: i64, details: bool,
+    compact: &CompactSnapshot, scope: Vec<Option<String>>, indent: i64, details: bool, quiet_windows_context: bool,
 ) -> PyResult<NativeCurrent> {
     let options = DisplayOptions { compact: true, public_api: true, details };
-    comparison_result(compact.comparison(scope, options, indent))
+    comparison_result(compact.comparison(scope, options, indent).map(|mut current| {
+        // Signatures and coverage stay complete. Only an unchanged partial node
+        // stops forcing all its ancestors back into each Windows window delta.
+        if quiet_windows_context && !details {
+            for node in &mut current.context { node.partial = false; }
+        }
+        current
+    }))
 }
 
 fn comparison_result(result: Result<CurrentTree, diff::InvalidPreparedComparison>) -> PyResult<NativeCurrent> {

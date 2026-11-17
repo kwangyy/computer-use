@@ -66,6 +66,16 @@ def _freeze_metadata(value: Any) -> Any:
     return value
 
 
+def _copy_evidence(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _copy_evidence(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_evidence(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_evidence(item) for item in value)
+    return value
+
+
 class DecodedProperty(NamedTuple):
     """Decoded field identity, payload, status, arguments, and read evidence."""
 
@@ -85,7 +95,10 @@ class DriverWire:
     """
 
     def __init__(self, value: Any, *, semantic_values: bool = False) -> None:
-        self.raw = record(value, {"kind", "session", "platform", "roots", "nodes", "read"}, {"metadataValues"})
+        self.raw = record(
+            value, {"kind", "session", "platform", "roots", "nodes", "read"},
+            {"metadataValues", "readMetadata", "propertyPool"},
+        )
         if (
             self.raw["kind"] != "observation"
             or not isinstance(self.raw["platform"], str)
@@ -127,13 +140,63 @@ class DriverWire:
         self.metadata_values = tuple(metadata_values)
         self.metadata_depths = tuple(metadata_depths)
         self._attribute_catalogues: set[int] = set()
-        self.read = self.read_info(self.raw["read"])
+        self._expansion_remaining = 64 * 1024 * 1024
+        self._read_metadata = []
+        for entry in array(self.raw["readMetadata"]) if "readMetadata" in self.raw else ():
+            record(entry, _EMPTY_FIELDS, _READ_FIELDS)
+            self._validate_shared_record(entry, allow_read=False)
+            self._read_metadata.append(_copy_evidence(self._inline_read_info(entry)))
+        self.read = self._inline_read_info(self.raw["read"])
         self.details = self.read["details"]
         self.interval = self.read.get("intervalNs")
         if self.interval is None or not isinstance(self.details.get("observation_id"), str):
             raise ValueError("driver observation: capture identity and interval are required")
         text(self.details["observation_id"])
         text(self.details.get("surface"))
+        self._property_pool = []
+        if self.platform != "windows" and "propertyPool" in self.raw:
+            raise ValueError("driver observation: property pools are Windows-only")
+        if "propertyPool" in self.raw:
+            entries = array(self.raw["propertyPool"])
+            if len(entries) > 65536:
+                raise ValueError("driver observation: property pool budget exceeded")
+            for entry in entries:
+                self._validate_shared_record(entry, allow_read=True)
+                self._property_pool.append(DecodedProperty(*_copy_evidence(self._inline_property(entry))))
+
+    def _validate_shared_record(self, raw: Any, *, allow_read: bool) -> None:
+        pending = [raw]
+        while pending:
+            value = pending.pop()
+            self.remaining -= 1
+            if self.remaining < 0:
+                raise ValueError("driver observation: value budget exceeded")
+            if isinstance(value, dict):
+                forbidden_read = not allow_read and "metadataRead" in value
+                if "ref" in value or "property" in value or forbidden_read:
+                    raise ValueError("driver observation: pooled records must be reference-free inline records")
+                if "metadataValue" in value:
+                    index = record(value, _METADATA_REFERENCE)["metadataValue"]
+                    self._pool_entry(index, self.metadata_values)
+                    pending.append(self.raw["metadataValues"][index])
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+
+    @staticmethod
+    def _pool_entry(index: Any, entries: list | tuple) -> Any:
+        # Pool indices must reject bool, which is an int subclass.
+        # pylint: disable-next=unidiomatic-typecheck
+        if type(index) is not int or not 0 <= index < len(entries):
+            raise ValueError("driver observation: invalid compact pool index")
+        return entries[index]
+
+    def _copy_pool(self, entry: Any) -> Any:
+        # Query reads are small, but still bound expansion independently of frame bytes.
+        self._expansion_remaining -= len(repr(entry)) * 4
+        if self._expansion_remaining < 0:
+            raise ValueError("driver observation: property expansion budget exceeded")
+        return _copy_evidence(entry)
 
     def pairs(self, values: Any, depth: int = 0, *, metadata_values: bool = False) -> list[tuple[str, Any]]:
         """Decode ordered metadata fields while rejecting malformed pairs."""
@@ -310,6 +373,12 @@ class DriverWire:
 
     def read_info(self, value: Any) -> dict[str, Any]:
         """Decode read scope and coverage separately from element properties."""
+        if isinstance(value, dict) and "metadataRead" in value:
+            index = record(value, {"metadataRead"})["metadataRead"]
+            return self._copy_pool(self._pool_entry(index, self._read_metadata))
+        return self._inline_read_info(value)
+
+    def _inline_read_info(self, value: Any) -> dict[str, Any]:
         if value is None:
             return {"details": {}, "issues": []}
         v = record(value, _EMPTY_FIELDS, _READ_FIELDS)
@@ -333,6 +402,13 @@ class DriverWire:
 
     def property(self, raw: Any) -> DecodedProperty:
         """Validate a field result and decode its query-local components."""
+        if isinstance(raw, dict) and "property" in raw:
+            index = record(raw, {"property"})["property"]
+            entry = self._pool_entry(index, self._property_pool)
+            return DecodedProperty(*self._copy_pool(entry))
+        return self._inline_property(raw)
+
+    def _inline_property(self, raw: Any) -> DecodedProperty:
         prop = record(raw, _PROPERTY_REQUIRED, _PROPERTY_OPTIONAL)
         key = array(prop["key"])
         if len(key) != 2 or type(key[1]) not in (str, int):
@@ -570,7 +646,7 @@ def query_facts(wire: DriverWire) -> dict[str, Any]:
             if matches_arguments:
                 name = f"{key[0]}::{name}#{index}"
             requested.append(name)
-            if raw_property["value"] is not None:
+            if state == "value":
                 values[name] = value
             status = field_status(state, read)
             if status is not None:

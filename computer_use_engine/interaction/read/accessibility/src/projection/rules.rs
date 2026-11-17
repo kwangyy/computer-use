@@ -573,6 +573,16 @@ impl Projection {
                 && (!WRAPPERS.contains(&role(parent)) || truth(parent, "name") || truth(parent, "description"))
         });
         let compact = self.options.compact;
+        if compact && self.options.subtree.is_none() && parent.is_some() && !in_table && !self.keep(id)
+            && Some(id) != self.options.focused && evidence.coincident_groups.contains(&id)
+            && !truth(node, "spatialPosition") && !truth(node, "name") && !truth(node, "description")
+            && !truth(node, "labelTargets") && node.children.len() == 1
+            && self.node(node.children[0]).is_some_and(|child| child.scope == node.scope && same_blocking(node, child))
+        {
+            let children = node.children.clone();
+            self.elide(id, ElisionKind::Splice, children.clone(), "prune_layout", "coincident Windows groups", None)?;
+            return Ok(Some(children));
+        }
         let mut removable = if compact { anonymous(node, false)? } else { layout(node, false, false, false)? };
         if !removable && compact && evidence.provider_wrappers.contains(&id)
             && node.children.len() == 1 && !truth(node, "spatialPosition")

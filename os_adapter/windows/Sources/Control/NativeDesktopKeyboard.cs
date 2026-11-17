@@ -30,7 +30,7 @@ namespace ComputerUse.Windows
         {
             r.Check();
             if (!Native.Interactive())
-                throw new Failure("desktop_unavailable", "desktop input requires the unlocked interactive desktop");
+                throw Failure.DesktopUnavailable("desktop input requires the unlocked interactive desktop");
             NativeDesktopState.RequireInput();
         }
 

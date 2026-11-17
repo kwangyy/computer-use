@@ -55,9 +55,13 @@ On Windows, use `C:/absolute/path/to/computer-use/.venv/Scripts/computer-use-mcp
 `PYTHONSAFEPATH=1` prevents same-named directories in the host's working directory
 from shadowing the SDK package.
 
+On Windows, the banner at the top of the screen shows `Jiuwen` once a script starts using the desktop.
+To use your own display name, set `args` to `["--agent-display-name", "My Assistant"]` in the MCP launch configuration.
+Press Esc to stop the current tool call. The call returns a user stop notice and the output collected so far, with `stopReason` set to `user_stopped` in its progress metadata.
+
 For a connector form, such as WorkSwarm's, select **stdio**, name it `computer-use`,
-set the command to the executable path above, leave arguments empty and add the
-environment variable `PYTHONSAFEPATH=1`. The client manages configuration storage
+set the command to the executable path above, add optional arguments as needed,
+and set `PYTHONSAFEPATH=1` in the environment. The client manages configuration storage
 and connector activation.
 
 For manual server debugging, you can also run this from the checkout root:

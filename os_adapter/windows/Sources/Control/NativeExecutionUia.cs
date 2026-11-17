@@ -244,7 +244,7 @@ namespace ComputerUse.Windows
         {
             r.Check();
             if (!Native.Interactive())
-                throw new Failure("desktop_unavailable",
+                throw Failure.DesktopUnavailable(
                                   "native input requires the current unlocked interactive desktop");
             var identity = store.ValidateInputTarget(target, r);
             var window = identity.Window;

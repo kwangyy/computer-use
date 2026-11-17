@@ -16,11 +16,19 @@ from computer_use.native.preview import is_preview_event
 from .diagnostics import Journal
 from .output import OutputBuffer, is_output
 from .worker_lifecycle import EXIT_SETTLE_SECONDS, READY_ENV, WorkerLifecycle, WorkerStartupFailure
-from .worker_transport import FRAMED_PROTOCOL, EncodedObservationDiagnostic, read_message, write_message
+from .worker_transport import (
+    FRAMED_PROTOCOL,
+    PIPELINE_TAG_ENV,
+    EncodedObservationDiagnostic,
+    EncodedPipelineDiagnostic,
+    read_message,
+    write_message,
+)
 
 CLEANUP_TIMEOUT_SECONDS = 5
 
 RESET_NOTICE = "Execution session cleared. Python variables and handles cleared."
+USER_STOP_NOTICE = "Execution stopped by the user (Esc)."
 
 _LOG = logging.getLogger(__name__)
 
@@ -36,11 +44,14 @@ def completed(value):
 
 
 class ExecutionSession:
-    def __init__(self, timeout_ms=45000, on_preview=None, demo_foreground=False, *, allow_global_input=True):
+    def __init__(
+        self, timeout_ms=45000, on_preview=None, demo_foreground=False, *, allow_global_input=True, banner=None
+    ):
         if allow_global_input is not True and allow_global_input is not False:
             raise TypeError("allow_global_input must be a boolean")
         self.allow_global_input = allow_global_input
         self.demo_foreground = demo_foreground
+        self._banner = banner
         self.timeout_ms, self.on_preview = timeout_ms, on_preview
         self._child = self._pending = self._retiring = self._resetting = self._exited = None
         self._writer = self._reader = None
@@ -79,6 +90,8 @@ class ExecutionSession:
             return completed(execution_error("Another call is running. This call's code execution: not started."))
         if signal is not None and signal.is_set():
             return completed(execution_error("Call cancelled before execution."))
+        if self._banner is not None:
+            self._banner.start()
         self._starting = True
         generation = self._generation
         starting = self._track(self._start())
@@ -180,6 +193,7 @@ class ExecutionSession:
             timer=None,
             cancel=None,
             sent=False,
+            userStopped=False,
             deadline=loop.time() + self.timeout_ms / 1000,
         )
 
@@ -187,6 +201,8 @@ class ExecutionSession:
             self.reset(f"Execution exceeded {self.timeout_ms} ms without native command progress.")
 
         def progress():
+            if pending["userStopped"]:
+                return
             if pending["timer"] is not None:
                 pending["timer"].cancel()
             pending["timer"] = loop.call_later(self.timeout_ms / 1000, stalled)
@@ -200,6 +216,8 @@ class ExecutionSession:
                 _LOG.debug("Worker cleanup or notification did not complete.", exc_info=True)
 
         def cleanup():
+            if self._banner is not None:
+                self._banner.finish(id_)
             if pending["timer"] is not None:
                 pending["timer"].cancel()
             if pending["cancel"] is not None:
@@ -237,6 +255,24 @@ class ExecutionSession:
             await asyncio.shield(self.reset("Call cancelled."))
             raise
 
+    def _stop_by_user(self, execution_id):
+        pending = self._pending
+        if self._resetting is not None or pending is None:
+            return
+        if pending["id"] != execution_id or pending["userStopped"]:
+            return
+        pending["userStopped"] = True
+        if self._banner is not None:
+            self._banner.reset()
+        pending["timer"].cancel()
+        loop = asyncio.get_running_loop()
+        pending["deadline"] = loop.time() + CLEANUP_TIMEOUT_SECONDS
+        pending["timer"] = loop.call_at(pending["deadline"], self.reset, "Worker did not settle after Esc.")
+        try:
+            write_message(self._writer, {"cancelExecutionId": execution_id})
+        except (OSError, RuntimeError):
+            self.reset("Lost worker connection while stopping execution.")
+
     async def _start(self):
         if self._child is not None:
             if self._worker is not None and self._worker.failed:
@@ -252,7 +288,7 @@ class ExecutionSession:
             COMPUTER_USE_DEMO_FOREGROUND="1" if self.demo_foreground else "0",
             COMPUTER_USE_LIFETIME_FD="4",
             COMPUTER_USE_WORKER_PROTOCOL=FRAMED_PROTOCOL,
-            **{READY_ENV: "1"},
+            **{READY_ENV: "1", PIPELINE_TAG_ENV: "1"},
         )
         if os.name == "nt":
             from .windows_worker import WorkerInterpreterOutsideJob, start_windows_worker
@@ -353,13 +389,17 @@ class ExecutionSession:
             raise WorkerStartupFailure(worker.failure())
 
     async def _receive(self, child, reader, worker):
+        pipeline_lines = {}
         error = None
         try:
             while True:
-                message = await read_message(reader)
+                message = await read_message(reader, encoded_pipeline=True, pipeline_lines=pipeline_lines)
                 if message is None:
                     break
                 if self._child is not child:
+                    continue
+                if isinstance(message, EncodedPipelineDiagnostic):
+                    self._journal.record_pipeline(message.line, message.byte_count)
                     continue
                 if isinstance(message, EncodedObservationDiagnostic):
                     self._journal.record_observation(message.header_json, message.result_json)
@@ -381,12 +421,16 @@ class ExecutionSession:
                     event = message["diagnostic"]
                     if isinstance(event, dict):
                         self._journal.record({**event, "executionId": message.get("executionId")})
-                        if (
-                            self._pending is not None
-                            and message.get("executionId") == self._pending["id"]
-                            and event.get("kind") in ("command_start", "command_end")
-                        ):
-                            self._pending["progress"]()
+                        pending = self._pending
+                        if pending is not None and message.get("executionId") == pending["id"]:
+                            kind = event.get("kind")
+                            if kind in ("command_start", "command_end"):
+                                pending["progress"]()
+                            elif (
+                                kind == "sdk_operation_start" and self._banner is not None
+                                and not pending["userStopped"]
+                            ):
+                                self._banner.show(pending["id"], self._stop_by_user)
                 elif "output" in message:
                     pending = self._pending
                     if pending is None or message.get("executionId") != pending["id"]:
@@ -447,6 +491,9 @@ class ExecutionSession:
         pending, self._pending = self._pending, None
         if pending is None:
             return
+        if pending["userStopped"]:
+            result["content"].insert(0, {"type": "text", "text": USER_STOP_NOTICE})
+            result["isError"] = True
         duration = (asyncio.get_running_loop().time() - pending["startedAt"]) * 1000
         self._journal.record(
             dict(
@@ -471,6 +518,8 @@ class ExecutionSession:
             "completion": completion,
             "receipts": list(pending["receipts"]),
         }
+        if pending["userStopped"]:
+            self._last_progress["stopReason"] = "user_stopped"
         if result.get("isError"):
             self._last_progress["isError"] = True
         if "failure" in worker_meta:
@@ -495,6 +544,8 @@ class ExecutionSession:
     def reset(self, reason="Execution reset requested."):
         if self._resetting is not None:
             return self._resetting
+        if self._banner is not None:
+            self._banner.reset()
         # Once code was sent, resetting Python state cannot prove how far that
         # code ran. Keep that execution fact alongside any streamed receipts.
         pending = self._pending

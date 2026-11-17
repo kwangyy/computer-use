@@ -302,7 +302,7 @@ namespace ComputerUse.Windows
                 // activation. This owned shell transition still needs the
                 // same unlocked input desktop, not a continuously nonzero HWND.
                 if (!Native.Interactive(false))
-                    throw new Failure("desktop_unavailable", "system-menu preparation lost the interactive desktop; no requested input sent");
+                    throw Failure.DesktopUnavailable("system-menu preparation lost the interactive desktop; no requested input sent");
                 NativeDesktopState.RequireInput();
                 Native.Released();
                 if (Native.NoActivate(target.Handle) || !Native.IsWindowVisible(target.Handle) || Native.IsIconic(target.Handle) || !Native.IsWindowEnabled(target.Handle))
@@ -402,7 +402,8 @@ namespace ComputerUse.Windows
 
             bool SystemMenu(Surface surface)
             {
-                return Image(surface, @"SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\SearchHost.exe") || Image(surface, @"SystemApps\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\StartMenuExperienceHost.exe") || Image(surface, @"SystemApps\Microsoft.Windows.Search_cw5n1h2txyewy\SearchApp.exe");
+                return Image(surface, NativeStartMenu.SearchHost) || Image(surface, NativeStartMenu.StartHost) ||
+                       Image(surface, NativeStartMenu.SearchApp);
             }
 
             internal override bool TrustedMenu(Surface surface)

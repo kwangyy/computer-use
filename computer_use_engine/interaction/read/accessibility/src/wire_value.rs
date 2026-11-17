@@ -8,6 +8,7 @@ use super::value::Value;
 use super::wire::{WireError, WireResult};
 
 mod url;
+mod windows_pool;
 use url::resolve_url;
 
 pub(super) const VALUE_DEPTH_LIMIT: usize = 96;
@@ -15,6 +16,7 @@ const VALUE_BUDGET: i64 = 2_000_000;
 const NODE_BUDGET: usize = 65_536;
 const METADATA_EXPANSION_LIMIT: usize = 64 * 1024 * 1024;
 const VALUE_FIELDS: &[&str] = &["nativeType", "data"];
+const READ_FIELDS: &[&str] = &["api", "producer", "cached", "intervalNs", "complete", "issues", "details"];
 const RECORD_ERROR: WireError = WireError::Invalid("driver observation: unexpected or missing record fields");
 const BUDGET_ERROR: WireError = WireError::Invalid("driver observation: value budget exceeded");
 
@@ -58,6 +60,7 @@ fn present(value: Option<&Value>) -> Option<&Value> {
     value.filter(|value| !matches!(value, Value::Null))
 }
 
+#[derive(Clone)]
 pub(super) struct WireProperty<'a> {
     pub key_namespace: std::borrow::Cow<'a, str>,
     pub key: Value,
@@ -79,6 +82,12 @@ struct MetadataValue {
     owned_size: usize,
 }
 
+struct MetadataRead {
+    value: Value,
+    owned_size: usize,
+    omit_batch: bool,
+}
+
 pub(super) struct WireValues<'a> {
     pub raw: &'a Value,
     pub platform: &'a str,
@@ -91,13 +100,16 @@ pub(super) struct WireValues<'a> {
     semantic_values: bool,
     metadata_depth: Option<usize>,
     metadata_values: Vec<MetadataValue>,
+    metadata_reads: Vec<MetadataRead>,
+    property_pool: Vec<(WireProperty<'static>, WireProperty<'static>, usize)>,
     metadata_expansion_remaining: usize,
     attribute_catalogues: HashSet<usize>,
 }
 
 impl<'a> WireValues<'a> {
     pub(super) fn new(raw: &'a Value, semantic_values: bool) -> WireResult<Self> {
-        record(raw, &["kind", "session", "platform", "roots", "nodes", "read"], &["metadataValues"])?;
+        record(raw, &["kind", "session", "platform", "roots", "nodes", "read"],
+            &["metadataValues", "readMetadata", "propertyPool"])?;
         let platform = raw.get("platform").and_then(Value::as_str).unwrap_or("");
         if raw.get("kind").and_then(Value::as_str) != Some("observation")
             || !matches!(platform, "macos" | "windows" | "linux")
@@ -146,6 +158,8 @@ impl<'a> WireValues<'a> {
             semantic_values,
             metadata_depth: None,
             metadata_values: Vec::new(),
+            metadata_reads: Vec::new(),
+            property_pool: Vec::new(),
             metadata_expansion_remaining: METADATA_EXPANSION_LIMIT,
             attribute_catalogues: HashSet::new(),
         };
@@ -159,7 +173,23 @@ impl<'a> WireValues<'a> {
                 wire.metadata_values.push(MetadataValue { owned_size: owned_size(&value), value, depth });
             }
         }
-        wire.read = wire.read_info(raw.get("read"), false)?;
+        if let Some(entries) = raw.get("readMetadata") {
+            let entries = array(entries)?;
+            wire.metadata_reads.try_reserve_exact(entries.len())?;
+            for entry in entries {
+                record(entry, &[], READ_FIELDS)?;
+                wire.validate_read_pool_entry(entry)?;
+                let value = wire.inline_read_info(Some(entry), false)?;
+                let omit_batch = entry.get("details").and_then(Value::as_seq).is_some_and(|pairs| {
+                    matches!(pairs, [owner, index]
+                        if owner.as_seq().is_some_and(|p| p.len() == 2 && p[0].as_str() == Some("batch_owner"))
+                        && index.as_seq().is_some_and(|p| p.len() == 2 && p[0].as_str() == Some("batch_index")))
+                });
+                wire.metadata_reads.push(MetadataRead { owned_size: owned_size(&value), value, omit_batch });
+            }
+        }
+        // The capture's own interval, completeness and issues remain inline.
+        wire.read = wire.inline_read_info(raw.get("read"), false)?;
         let details = wire.read.get("details").unwrap();
         let observation = details.get("observation_id").and_then(Value::as_str);
         if present(wire.read.get("intervalNs")).is_none() || observation.is_none() {
@@ -167,6 +197,7 @@ impl<'a> WireValues<'a> {
         }
         text(details.get("observation_id").unwrap())?;
         text(details.get("surface").unwrap_or(&Value::Null))?;
+        wire.open_windows_pools()?;
         Ok(wire)
     }
 
@@ -417,10 +448,58 @@ impl<'a> WireValues<'a> {
     }
 
     pub(super) fn read_info(&mut self, raw: Option<&Value>, query_only: bool) -> WireResult<Value> {
+        if let Some(raw) = raw.filter(|raw| raw.get("metadataRead").is_some()) {
+            self.debit(0)?;
+            record(raw, &["metadataRead"], &[])?;
+            let index = raw.get("metadataRead").and_then(Value::as_i64)
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index < self.metadata_reads.len())
+                .ok_or(WireError::Invalid("driver observation: invalid read metadata reference"))?;
+            let entry = &self.metadata_reads[index];
+            self.metadata_expansion_remaining = self.metadata_expansion_remaining.checked_sub(entry.owned_size)
+                .ok_or(WireError::Unsupported("metadata expansion limit"))?;
+            let mut result = entry.value.clone();
+            if query_only && entry.omit_batch {
+                *result.get_mut("details").unwrap() = Value::Map(Vec::new());
+            }
+            return Ok(result);
+        }
+        self.inline_read_info(raw, query_only)
+    }
+
+    // Pool entries contain evidence only. No recursive read markers or native
+    // object references may hide in a shared record, including value-pool slots.
+    fn validate_read_pool_entry(&mut self, raw: &Value) -> WireResult<()> {
+        self.debit(0)?;
+        let mut pending = vec![raw];
+        let mut remaining = VALUE_BUDGET;
+        while let Some(value) = pending.pop() {
+            remaining -= 1;
+            if remaining < 0 { return Err(BUDGET_ERROR); }
+            if let Some(fields) = value.as_map() {
+                if value.get("metadataRead").is_some() || value.get("ref").is_some() {
+                    return Err(WireError::Invalid("driver observation: read metadata pool must contain reference-free inline records"));
+                }
+                if let Some(index) = value.get("metadataValue") {
+                    record(value, &["metadataValue"], &[])?;
+                    let index = index.as_i64().and_then(|index| usize::try_from(index).ok())
+                        .filter(|index| *index < self.metadata_values.len())
+                        .ok_or(WireError::Invalid("driver observation: invalid metadata value reference"))?;
+                    pending.push(&array(self.raw.get("metadataValues").unwrap())?[index]);
+                }
+                pending.extend(fields.iter().map(|(_, value)| value));
+            } else if let Some(items) = value.as_seq() {
+                pending.extend(items.iter());
+            }
+        }
+        Ok(())
+    }
+
+    fn inline_read_info(&mut self, raw: Option<&Value>, query_only: bool) -> WireResult<Value> {
         let Some(raw) = present(raw) else {
             return Ok(map([("details", Value::Map(Vec::new())), ("issues", Value::Seq(Vec::new()))]));
         };
-        record(raw, &[], &["api", "producer", "cached", "intervalNs", "complete", "issues", "details"])?;
+        record(raw, &[], READ_FIELDS)?;
         for key in ["api", "producer"] {
             if let Some(value) = present(raw.get(key)) {
                 text(value)?;
@@ -474,7 +553,7 @@ impl<'a> WireValues<'a> {
         self.pairs(raw, 0, true)
     }
 
-    pub(super) fn property(&mut self, raw: &'a Value, query_only: bool) -> WireResult<WireProperty<'a>> {
+    fn inline_property(&mut self, raw: &'a Value, query_only: bool) -> WireResult<WireProperty<'a>> {
         record(raw, &["key", "value"], &["state", "arguments", "read"])?;
         let [namespace, key] = array(raw.get("key").unwrap())? else {
             return Err(WireError::Invalid("driver observation: invalid property key"));

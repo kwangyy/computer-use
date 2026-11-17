@@ -52,8 +52,12 @@ Agent 需支持 MCP 工具调用；要使用截图，还需客户端和模型支
 Windows 对应路径为 `C:/absolute/path/to/computer-use/.venv/Scripts/computer-use-mcp.exe`。
 `PYTHONSAFEPATH=1` 用于避免宿主工作目录中的同名文件夹遮蔽 SDK 包。
 
+Windows 上，脚本开始操作桌面后，屏幕顶部会显示「Jiuwen 正在使用你的电脑…」。
+集成方可在 MCP 启动配置的 `args` 中选填 `["--agent-display-name", "我的助手"]`，替换提示条上的名称。
+按 `Esc` 停止当前工具调用。调用会直接返回用户终止信息和已经产生的输出，进度中的 `stopReason` 为 `user_stopped`。
+
 如果客户端提供连接器表单（例如 WorkSwarm），选择 **stdio** 类型，名称填写 `computer-use`，
-命令填写上述可执行文件路径，参数留空，并添加环境变量 `PYTHONSAFEPATH=1`。
+命令填写上述可执行文件路径，按需填写参数，并添加环境变量 `PYTHONSAFEPATH=1`。
 其配置存储位置和启用方式由客户端管理。
 
 需要手动启动服务调试时，也可在仓库根目录运行：
@@ -122,6 +126,10 @@ macOS 可用 `computer.list_windows(app_name=display_name)` 按准确显示名�
 从 `catalogue.windows` 选择后调用 `computer.app(row.app_id).read(window=row.window_ref)`。
 Windows 可用 `computer.app(window_title=title)` 绑定完整标题对应的唯一窗口。
 macOS 和 Windows 支持 `app.close_window(ref)`，保存确认由调用方处理。
+
+**Windows 应用启动。** 首次显式调用 `app.read()` 时，SDK 先查找正在运行的窗口。需要启动时，可用当前用户
+开始菜单中的准确显示名、应用 ID（包括 AUMID）或绝对 `.exe` 路径指定应用。若名称匹配多个启动项，
+错误中会提供可选应用 ID。SDK 确认匹配窗口后继续读取界面。`computer.list_apps()` 仍列出有可观察窗口的运行应用。
 
 **截图坐标。** 使用实际展示图片的像素，原点在左上角。按图片旁的示例创建定位值，由 SDK 换算缩放和位置。
 

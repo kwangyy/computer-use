@@ -412,8 +412,12 @@ class InterfaceImagePipeline:
         previous = (
             self.controller.interfaces.windows.delivered_image(state, ui) if fixed_window else state.delivered_image
         )
-        state.image_generation += 1
-        generation = state.image_generation
+        if canvas.source_canvas is None:
+            state.image_generation += 1
+            generation = state.image_generation
+        else:
+            # A delivery view retains the source capture's acquisition order.
+            generation = canvas.source_canvas.generation
         canvas.generation = generation
         for piece in canvas.pieces:
             if not piece.scope_confirmed:
@@ -548,6 +552,9 @@ class InterfaceImagePipeline:
                 # pylint: disable-next=protected-access
                 selector=str(ui._instance.selector),
                 coordinateOwner=application,
+                coordinateImage=weakref.ref(canvas),
+                coordinateController=controller,
+                platform=state.directory.get("platform"),
                 coordinateGeneration=generation,
                 coordinateTarget=coordinate_target,
                 coordinateRegions=regions,

@@ -296,7 +296,7 @@ fn collect_values(raw: &Value, semantic: bool) -> Result<Query> {
                 } else {
                     provider
                 };
-                if raw_property.get("value").is_some_and(|value| !matches!(value, Value::Null)) {
+                if state == "value" {
                     set(&mut values, &provider, value.clone());
                 }
                 if let Some(status) = field_status(state, &property.read) {
@@ -307,7 +307,7 @@ fn collect_values(raw: &Value, semantic: bool) -> Result<Query> {
             let catalogue = namespace == "toolkit" && matches!(name,
                 Some("attribute_names" | "action_names" | "parameterized_attribute_names" | "actions"));
             if !property.arguments.is_empty() {
-                property.read = wire.read_info(raw_property.get("read"), false)?;
+                property.read = wire.property(raw_property, false)?.read;
             }
             if catalogue || !property.arguments.is_empty() {
                 retained.push((index, property.into_owned()));

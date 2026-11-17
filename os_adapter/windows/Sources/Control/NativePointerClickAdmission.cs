@@ -25,9 +25,13 @@ namespace ComputerUse.Windows
             // move-size/menu/system-menu/popup-menu modes are not.
             return known && capture == IntPtr.Zero && (flags & ~1u) == 0;
         }
-        internal static bool ElementReady(NativePointerState route, NativeElementHit hit, bool requiresConfirmed)
+        internal static bool ElementReady(NativePointerState route, NativeElementHit hit)
         {
-            return hit.Ready(route.PhysicalReady, requiresConfirmed) &&
+            // UIA FromPoint may report an underlying control while a same-HWND
+            // popup is visibly above it. It cannot veto the independent native
+            // route to the retained element's current geometry. Foreign HWNDs
+            // are still rejected by that route before this admission decision.
+            return route.PhysicalReady &&
                    (route.ForegroundReady || route.NaturalActivation && hit.Confirmed);
         }
     }

@@ -241,8 +241,11 @@ def test_deadline_or_cancel_during_write_does_not_save(cancel):
             await asyncio.Event().wait()
 
         desktop.type_text = blocked_write
-        task = asyncio.create_task(invoke_async(desktop, timeout_s=5 if cancel else 0.02))
-        await started.wait()
+        # Windows can spend more than 20 ms admitting the program under load.
+        # Reach the blocked write before the deadline, and bound the fixture wait
+        # so an early admission failure cannot hang the entire test run.
+        task = asyncio.create_task(invoke_async(desktop, timeout_s=5 if cancel else 1))
+        await asyncio.wait_for(started.wait(), timeout=3)
         if cancel:
             task.cancel()
         return await task

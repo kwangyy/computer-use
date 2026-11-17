@@ -12,6 +12,7 @@ namespace ComputerUse.Windows
     internal sealed class NativeWindowRecord
     {
         internal bool? ObservedModal;
+        internal ControlType ObservedPopupRole;
         internal Window Native;
         internal string Application, RootNode;
         internal string ApplicationIdentifier, ApplicationName;
@@ -51,6 +52,16 @@ namespace ComputerUse.Windows
             get {
                 return Ownership.State == NativeOwnershipState.Outside;
             }
+        }
+        internal void ObserveParentBoundary(NativeNodeRecord parent)
+        {
+            // Child enumeration can expose a popup's list under its opening
+            // combo even though Raw View gives that list a different parent.
+            // Only positive outside evidence closes this capture's boundary;
+            // missing HWNDs and known hosted fragments remain readable.
+            if (!Ownership.Confirmed && parent != null && parent.Outside)
+                Ownership = new NativeObservationScope(NativeOwnershipState.Outside,
+                    "The observed Raw View parent belongs to another native window. " + parent.Ownership.Detail);
         }
         internal string ReferenceScope
         {
@@ -628,6 +639,16 @@ namespace ComputerUse.Windows
             return id;
         }
 
+        internal NativeNodeRecord KeepObservedParent(NativeNodeRecord source, Request r)
+        {
+            r.Check();
+            var parent = UiaClient.Parent(source.Element);
+            // KeepRelated has just observed identity and window provenance.
+            // Consume that query result directly, without another identity
+            // roundtrip for every sibling sharing this parent.
+            return parent == null ? null : nodes[KeepRelated(parent, source, r)];
+        }
+
         // A provider can expose text children or virtualized placeholders with
         // no usable HWND/parent. Preserve that observation, without granting
         // the input authority provided by Node()'s independent live checks.
@@ -793,6 +814,35 @@ namespace ComputerUse.Windows
 
             Pins.Add(id);
             return item;
+        }
+
+        internal bool IsAttachedMenuCapture(NativeWindowRecord host, IntPtr capture, Request r)
+        {
+            // Reuse observed menu semantics, but revalidate every HWND and live
+            // owner edge. Same-process or ordinary owned windows are not menus.
+            var current = Native.GetAncestor(capture, 2);
+            var seen = new HashSet<IntPtr>();
+            for (int n = 0; n < 64 && current != IntPtr.Zero && seen.Add(current); n++)
+            {
+                r.Check();
+                NativeWindowRecord menu;
+                if (!windows.TryGetValue(current, out menu) || menu.ObservedPopupRole != ControlType.Menu)
+                    return false;
+                try
+                {
+                    menu.Native.Validate();
+                }
+                catch (Failure)
+                {
+                    return false;
+                }
+                if (!Native.IsWindowVisible(current) || Native.IsIconic(current))
+                    return false;
+                current = Native.GetWindow(current, 4);
+                if (current == host.Native.Handle)
+                    return true;
+            }
+            return false;
         }
 
         internal void RequireNoKnownModal(NativeWindowRecord window, Request r)
