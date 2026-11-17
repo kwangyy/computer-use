@@ -23,14 +23,16 @@ namespace ComputerUse.Windows
         static readonly uint captureMessage = RegisterWindowMessage("ComputerUse.AgentPointer.capture.v1");
         static readonly string executable = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
         readonly Action captureReleased;
+        readonly bool captureExcluded;
         int captures;
         bool visible;
         volatile bool stopped;
-        internal DesktopDecorationWindow(string title, Action captureReleased = null)
+        internal DesktopDecorationWindow(string title, Action captureReleased = null, bool excludeFromCapture = false)
         {
             this.captureReleased = captureReleased;
             CreateHandle(new CreateParams { Caption = title, Style = unchecked((int)0x88000000), ExStyle = 0x080800a0, Width = 1, Height = 1 }); // POPUP|DISABLED; NOACTIVATE|LAYERED|TRANSPARENT|TOOLWINDOW
             SetProp(Handle, Property, magic);
+            captureExcluded = excludeFromCapture && SetWindowDisplayAffinity(Handle, 0x11); // WDA_EXCLUDEFROMCAPTURE.
         }
 
         internal static bool IsDecoration(IntPtr handle)
@@ -55,6 +57,13 @@ namespace ComputerUse.Windows
         {
             if ((uint)message.Msg == captureMessage)
             {
+                if (captureExcluded)
+                {
+                    // Keep the session banner visible while Windows omits it
+                    // from captures. Other decorations retain hide/restore.
+                    message.Result = new IntPtr(1);
+                    return;
+                }
                 int previous = captures;
                 captures = Math.Max(0, captures + (message.WParam == IntPtr.Zero ? -1 : 1));
                 if (captures > 0)
@@ -192,8 +201,8 @@ namespace ComputerUse.Windows
             return SystemParametersInfo(0x1042, 0, out animate, 0) && !animate;
         }
 
-        // Hide only confirmed decorations for our own captures. Keeping the
-        // normal affinity allows external demo/screen recordings to see them.
+        // Hide only confirmed decorations that do not opt into OS exclusion.
+        // The pointer keeps normal affinity for external demo recordings.
         internal static IDisposable IsolateCaptures()
         {
             var paused = new List<IntPtr>();
@@ -277,6 +286,8 @@ namespace ComputerUse.Windows
         static extern uint RegisterWindowMessage(string name);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         static extern bool SetProp(IntPtr handle, string name, IntPtr value);
+        [DllImport("user32.dll")]
+        static extern bool SetWindowDisplayAffinity(IntPtr handle, uint affinity);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         static extern IntPtr GetProp(IntPtr handle, string name);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]

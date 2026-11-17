@@ -17,6 +17,7 @@ class WindowsExecutionBanner:
     def __init__(self, display_name):
         self._display_name = " ".join(display_name.splitlines()).strip() or DEFAULT_AGENT_DISPLAY_NAME
         self._active = None
+        self._visible = False
         self._process = self._task = None
         self._closed = False
 
@@ -28,13 +29,21 @@ class WindowsExecutionBanner:
         if self._closed or (self._active is not None and self._active[0] == execution_id):
             return
         self._active = (execution_id, on_stop)
+        self._visible = True
         self.start()
         self._send(execution_id)
 
-    def hide(self, execution_id):
+    def finish(self, execution_id):
+        """Disarm this call's Esc callback without hiding the session marker."""
         if self._active is not None and self._active[0] == execution_id:
             self._active = None
             self._send(0)
+
+    def reset(self):
+        self._active = None
+        self._visible = False
+        if self._process is not None:
+            self._write("reset")
 
     def _send(self, execution_id):
         if self._process is not None:
@@ -58,8 +67,8 @@ class WindowsExecutionBanner:
             if not self._closed:
                 self._process = process
                 self._write(self._display_name)
-                if self._active is not None:
-                    self._send(self._active[0])
+                if self._visible:
+                    self._send(self._active[0] if self._active is not None else 0)
                 while True:
                     line = await process.stdout.readline()
                     if not line:
@@ -87,6 +96,7 @@ class WindowsExecutionBanner:
     async def close(self):
         self._closed = True
         self._active = None
+        self._visible = False
         if self._process is not None:
             # EOF closes the UI and releases its hook.
             self._process.stdin.close()

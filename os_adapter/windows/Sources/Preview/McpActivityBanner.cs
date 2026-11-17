@@ -11,7 +11,8 @@ using System.Windows.Forms;
 namespace ComputerUse.Windows
 {
     // A separate MCP-host child. Its stdin carries the display name once, then
-    // execution IDs (zero hides). Only an accepted Esc produces stdout.
+    // execution IDs (zero disarms Esc), or "reset" to hide the session marker.
+    // EOF ends the MCP-owned child. Only an accepted Esc produces stdout.
     internal sealed class McpActivityBanner : IDisposable
     {
         const int KeyboardLowLevel = 13;
@@ -34,7 +35,7 @@ namespace ComputerUse.Windows
             this.displayName = displayName;
             this.dispatcher = dispatcher;
             keyboardCallback = OnKey;
-            window = new DesktopDecorationWindow(DesktopDecorationWindow.BannerTitle, Paint);
+            window = new DesktopDecorationWindow(DesktopDecorationWindow.BannerTitle, Paint, excludeFromCapture: true);
         }
 
         internal static int Run()
@@ -62,6 +63,11 @@ namespace ComputerUse.Windows
                 string line;
                 while ((line = Console.ReadLine()) != null)
                 {
+                    if (line == "reset")
+                    {
+                        dispatcher.BeginInvoke((Action)Reset);
+                        continue;
+                    }
                     long id;
                     if (!long.TryParse(line, NumberStyles.None, CultureInfo.InvariantCulture, out id))
                         break;
@@ -85,22 +91,11 @@ namespace ComputerUse.Windows
 
         void SetExecution(long id)
         {
-            if (execution == id)
+            if (execution == id && image != null)
                 return;
             execution = id;
             acceptsStop = false;
-            window.Hide();
-            if (image != null)
-            {
-                image.Dispose();
-                image = null;
-            }
-            if (id == 0)
-            {
-                UnhookIfIdle();
-                return;
-            }
-
+            bool hadHook = hook != IntPtr.Zero;
             if (hook == IntPtr.Zero)
             {
                 escapeDown = IsDown((int)Keys.Escape);
@@ -108,6 +103,15 @@ namespace ComputerUse.Windows
                 if (hook == IntPtr.Zero)
                     Console.Error.WriteLine("Windows activity banner could not enable Esc ({0}).", Marshal.GetLastWin32Error());
             }
+            // Call completion and the next call retain the same visible HWND
+            // and artwork. The keyboard hook passes Esc through while idle.
+            if (image != null && hadHook == (hook != IntPtr.Zero))
+            {
+                Paint();
+                return;
+            }
+            if (image != null)
+                image.Dispose();
             var area = Screen.FromHandle(Native.GetForegroundWindow()).WorkingArea;
             int center = area.Left + area.Width / 2;
             float scale = DesktopDecorationWindow.Scale(new PointF(center, area.Top));
@@ -119,8 +123,21 @@ namespace ComputerUse.Windows
 
         void Paint()
         {
-            if (execution != 0 && image != null && window.Present(image, position, 255, IntPtr.Zero))
-                acceptsStop = hook != IntPtr.Zero;
+            if (image != null && window.Present(image, position, 255, IntPtr.Zero))
+                acceptsStop = execution != 0 && hook != IntPtr.Zero;
+        }
+
+        void Reset()
+        {
+            execution = 0;
+            acceptsStop = false;
+            window.Hide();
+            if (image != null)
+            {
+                image.Dispose();
+                image = null;
+            }
+            UnhookIfHidden();
         }
 
         IntPtr OnKey(int code, IntPtr message, IntPtr data)
@@ -135,7 +152,7 @@ namespace ComputerUse.Windows
                     if (consumedEscape)
                     {
                         consumedEscape = false;
-                        dispatcher.BeginInvoke((Action)UnhookIfIdle);
+                        dispatcher.BeginInvoke((Action)UnhookIfHidden);
                         return new IntPtr(1);
                     }
                 }
@@ -177,9 +194,9 @@ namespace ComputerUse.Windows
 
         static bool IsDown(int key) { return (Native.GetAsyncKeyState(key) & 0x8000) != 0; }
 
-        void UnhookIfIdle()
+        void UnhookIfHidden()
         {
-            if (execution == 0 && !consumedEscape)
+            if (image == null && !consumedEscape)
                 Unhook();
         }
 

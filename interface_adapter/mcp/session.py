@@ -217,7 +217,7 @@ class ExecutionSession:
 
         def cleanup():
             if self._banner is not None:
-                self._banner.hide(id_)
+                self._banner.finish(id_)
             if pending["timer"] is not None:
                 pending["timer"].cancel()
             if pending["cancel"] is not None:
@@ -542,6 +542,8 @@ class ExecutionSession:
     def reset(self, reason="Execution reset requested."):
         if self._resetting is not None:
             return self._resetting
+        if self._banner is not None:
+            self._banner.reset()
         # Once code was sent, resetting Python state cannot prove how far that
         # code ran. Keep that execution fact alongside any streamed receipts.
         pending = self._pending
