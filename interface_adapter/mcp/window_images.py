@@ -9,6 +9,7 @@ from computer_use.interaction.read.acquisition.images.composite.pipeline import 
 from computer_use.protocol.captures import capture_metadata
 from computer_use.session.images import _source, register_image_delivery
 from computer_use.session.interfaces import WindowIdentity
+from computer_use.session.surface_content import display_host
 
 
 def independent_window_images(png):
@@ -27,6 +28,16 @@ def independent_window_images(png):
     # Different historical states of the same window must remain explicitly
     # disambiguated by the original canvas, never compete for one point alias.
     if len({piece.window for piece in canvas.pieces}) != len(canvas.pieces):
+        return ()
+    # An attached menu and its host share a public point alias even though
+    # they have distinct HWNDs. Keep their existing composite before child
+    # registration can replace either member's delivered coordinate mapping.
+    hosts = dict(canvas.content_hosts)
+    captured = {identity.window: {"content": {"host": hosts.get(identity.window)}} for identity in canvas.identities}
+    aliases = {window: ref for ref, window in state.windows.items()}
+    assigned = [aliases.get(display_host(captured, piece.window)) for piece in canvas.pieces]
+    assigned = [ref for ref in assigned if ref is not None]
+    if len(set(assigned)) != len(assigned):
         return ()
     if not canvas.independent_images:
         pipeline = InterfaceImagePipeline(controller)

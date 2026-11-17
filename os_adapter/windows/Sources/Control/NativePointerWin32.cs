@@ -138,13 +138,20 @@ namespace ComputerUse.Windows
             bool foregroundKnown = Native.GetGUIThreadInfo(0, ref foreground);
             IntPtr hitWindow = Native.WindowFromPoint(new Native.POINT { X = point.X, Y = point.Y });
             bool hit = Native.Inside(handle, hitWindow);
-            bool noOtherGrab =
-                foregroundKnown && (foreground.Capture == IntPtr.Zero || Native.Inside(handle, foreground.Capture));
+            bool captureBlocked =
+                foregroundKnown && foreground.Capture != IntPtr.Zero && !Native.Inside(handle, foreground.Capture);
+            // A confirmed attached menu may consume one click outside itself
+            // to dismiss, just as with hand input. Do not activate or replay it.
+            bool menuCapture = captureBlocked && kind == "click" && gesture.Count == 1;
+            if (menuCapture)
+                menuCapture = windows.IsAttachedMenuCapture(window, foreground.Capture, r);
+            bool noOtherGrab = foregroundKnown && (!captureBlocked || menuCapture);
             bool route = noOtherGrab &&
                          (dragging && ownedGrab || hit && (!dragging || threadKnown && gui.Capture == IntPtr.Zero));
             IntPtr foregroundWindow = Native.GetForegroundWindow();
             bool active = foregroundWindow == handle;
-            bool foregroundReady = kind == "scroll" ? active : Native.PointerForeground(handle, foregroundWindow);
+            bool foregroundReady = menuCapture ||
+                (kind == "scroll" ? active : Native.PointerForeground(handle, foregroundWindow));
             bool physicalReady = route;
             // A hidden foreground can leave even an idle, reachable window
             // without the submitted click. Prepare the original HWND first.
@@ -170,6 +177,8 @@ namespace ComputerUse.Windows
             {
                 NativeInputAccess.RequireForeground();
                 NativeInputAccess.RequireWindow(handle);
+                if (menuCapture)
+                    NativeInputAccess.RequireWindow(foreground.Capture);
                 if (natural)
                     NativeInputAccess.RequireWindow(hitWindow);
             }
@@ -185,8 +194,7 @@ namespace ComputerUse.Windows
                 NaturalActivation = natural && route,
                 Foreground = active,
                 ForegroundReady = foregroundReady,
-                CaptureBlocked =
-                    foregroundKnown && foreground.Capture != IntPtr.Zero && !Native.Inside(handle, foreground.Capture),
+                CaptureBlocked = captureBlocked && !menuCapture,
                 Recipient = foregroundKnown && foreground.Capture != IntPtr.Zero ? foreground.Capture : hitWindow
             };
         }

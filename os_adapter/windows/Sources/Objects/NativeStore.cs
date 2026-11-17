@@ -816,6 +816,35 @@ namespace ComputerUse.Windows
             return item;
         }
 
+        internal bool IsAttachedMenuCapture(NativeWindowRecord host, IntPtr capture, Request r)
+        {
+            // Reuse observed menu semantics, but revalidate every HWND and live
+            // owner edge. Same-process or ordinary owned windows are not menus.
+            var current = Native.GetAncestor(capture, 2);
+            var seen = new HashSet<IntPtr>();
+            for (int n = 0; n < 64 && current != IntPtr.Zero && seen.Add(current); n++)
+            {
+                r.Check();
+                NativeWindowRecord menu;
+                if (!windows.TryGetValue(current, out menu) || menu.ObservedPopupRole != ControlType.Menu)
+                    return false;
+                try
+                {
+                    menu.Native.Validate();
+                }
+                catch (Failure)
+                {
+                    return false;
+                }
+                if (!Native.IsWindowVisible(current) || Native.IsIconic(current))
+                    return false;
+                current = Native.GetWindow(current, 4);
+                if (current == host.Native.Handle)
+                    return true;
+            }
+            return false;
+        }
+
         internal void RequireNoKnownModal(NativeWindowRecord window, Request r)
         {
             foreach (var candidate in surfaces.Values.Where(x => x.ObservedModal == true && x != window))
