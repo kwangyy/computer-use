@@ -26,6 +26,7 @@ import ApplicationServices
         }
         try BackgroundTarget(target.application).validate(input: true)
         guard AXIsProcessTrusted() else {
+            DesktopPermission.accessibility.guideOnce()
             throw DriverError("accessibility permission denied", code: .desktopUnavailable)
         }
         try inspection.validateTargetIdentity(target)

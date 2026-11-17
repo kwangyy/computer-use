@@ -159,7 +159,7 @@ class Connection:
         task.add_done_callback(self._readers.discard)
         return task
 
-    async def _connect(self):
+    async def _connect(self, deadline=None):
         self._check_retained_session()
         if self._child is not None:
             return
@@ -171,7 +171,8 @@ class Connection:
             )
         driver = self.driver if self.driver is not None else native_driver()
         command = driver["command"]
-        if self.driver is None and not Path(command).exists():
+        default_path = Path(command) if self.driver is None else None
+        if default_path is not None and not default_path.exists():
             reason = installed_backend_unavailable_reason()
             if reason == "unsupported_platform":
                 raise local_failure(
@@ -191,12 +192,25 @@ class Connection:
             )
         self._buffer, self._diagnostic, self._next_id = bytearray(), "", 1
         self._traces = {}
+        lifetime = 4 if os.environ.get("COMPUTER_USE_LIFETIME_FD") == "4" else -1
+        if sys.platform == "darwin" and default_path is not None and default_path.match("*.app/Contents/MacOS/*"):
+            from computer_use.native.macos_app import start_app
+
+            provenance = startup_provenance(command)
+            try:
+                async with asyncio.timeout_at(deadline / 1000 if deadline is not None else None):
+                    self._child = await start_app(default_path.parents[2], lifetime_fd=lifetime)
+            except TimeoutError as error:
+                raise local_failure("Jiuwen CUA launch timed out", "execution_failed", "connection") from error
+            self._child_uses_eof = True
+            self._track_child(self._child, command, provenance)
+            return
+
         windows = sys.platform == "win32"
         # Windows uses native stdio handles. The POSIX 3/4 descriptor bridge
         # and preview pipe are not part of its driver's transport contract.
         preview = get_preview_handler() if not windows else None
         read_fd = write_fd = -1
-        lifetime = 4 if os.environ.get("COMPUTER_USE_LIFETIME_FD") == "4" else -1
         if preview is not None:
             read_fd, write_fd = os.pipe()
         provenance = startup_provenance(command)
@@ -242,6 +256,9 @@ class Connection:
             )
             self._preview_transport = transport
             self._track(read_previews(reader, preview))
+        self._track_child(child, command, provenance)
+
+    def _track_child(self, child, command, provenance):
         diagnostic(
             dict(
                 kind="connection",
@@ -261,8 +278,7 @@ class Connection:
     def _on_exit(self):
         child = self._child
         if child is not None and child.returncode is None:
-            # TerminateProcess cannot run the driver's finally blocks. EOF
-            # lets its reader cancel native work and release paired input.
+            # EOF lets drivers owned by Windows or Launch Services unwind input.
             try:
                 if self._child_uses_eof:
                     child.stdin.close()
@@ -465,7 +481,7 @@ class Connection:
         self._check_retained_session()
         try:
             remaining()
-            await self._connect()
+            await self._connect(deadline)
             await self._negotiate(remaining())
         except asyncio.CancelledError:
             self.close(RuntimeError("connection request cancelled before dispatch"))
