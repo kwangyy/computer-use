@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from computer_use_agent.cli.config import initialize, load
 from computer_use_agent.cli.input import MessageInput
@@ -111,7 +112,7 @@ def test_cli_single_task(model_server, tmp_path, monkeypatch, capsys):
             {"model": "test-model", "api_key": "test-only", "api_base": server.model().model_client_config.api_base}
         )
     )
-    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("API_BASE", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     assert asyncio.run(main(["--config", str(path), "--no-desktop-check", "Run the CLI test"])) == 0
@@ -137,7 +138,7 @@ def test_cli_iteration_limit_reports_failure_after_streamed_output(model_server,
             }
         )
     )
-    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     for key in ("API_BASE", "OPENAI_BASE_URL", "MODEL_NAME", "OPENAI_MODEL"):
         monkeypatch.delenv(key, raising=False)
     result = asyncio.run(main(["--config", str(path), "Execute a tool and report the result"]))
@@ -167,7 +168,7 @@ def test_interactive_commands_preserve_execution_session(model_server, tmp_path,
             }
         )
     )
-    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     for key in ("API_BASE", "OPENAI_BASE_URL", "MODEL_NAME", "OPENAI_MODEL"):
         monkeypatch.delenv(key, raising=False)
     result = subprocess.run(
@@ -236,7 +237,7 @@ def test_cli_cancel_does_not_repeat_tool(model_server, tmp_path, monkeypatch):
             }
         )
     )
-    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     for key in ("API_BASE", "OPENAI_BASE_URL", "MODEL_NAME", "OPENAI_MODEL"):
         monkeypatch.delenv(key, raising=False)
     process = subprocess.Popen(

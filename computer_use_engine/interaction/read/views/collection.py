@@ -66,7 +66,7 @@ def complete_content(snapshot, root):
 class CollectionPlan:
     """Reconcile known local work without requiring a complete app catalogue."""
 
-    anchor: str
+    anchor: str | None
     view: str
     related: RelatedRead | None = None
     limit: int = 6
@@ -114,7 +114,14 @@ class CollectionPlan:
         # Prioritize actual blockers before ordinary attached or new peers.
         attached.sort(key=lambda key: permitted[key].get("modal") is not True)
         presented = [key for key, item in permitted.items() if transient_content(item)]
-        keys = dict.fromkeys((self.principal, *attached, *newly_seen, *presented))
+        windows_visual = directory["platform"] == "windows" and self.view == "image" and self.related is not None
+        keys = dict.fromkeys((*(newly_seen if windows_visual else ()), self.principal, *attached, *newly_seen, *presented))
+        if (
+            windows_visual and not self.related.window_family_only and not self.strict_window
+            and self.principal not in permitted
+        ):
+            keys.update(dict.fromkeys(permitted))
+            self.principal, self.selection_error = None, None
         if self.focused_editor is not None:
             host, editor = self.focused_editor
             if self.principal == host.window and host.window in permitted and editor.window in permitted:
@@ -149,13 +156,13 @@ class CollectionPlan:
                 and self.attempted_tree_roots[identity] is None
             )
             if (
-                first_ax_root and "tree" not in self.captured_components.get(identity, ())
+                first_ax_root and not windows_visual and "tree" not in self.captured_components.get(identity, ())
                 and identity not in self.tree_upgrades
             ):
                 self.tree_upgrades.add(identity)
                 self.pending_upgrades.add(identity)
             requested = components(self.view)
-            if self.view != "tree" and self.related is not None:
+            if self.view != "tree" and self.related is not None and not windows_visual:
                 needs_both = identity not in self.related.known_windows or (
                     item["modal"] is True and identity.window == self.principal
                     and identity != self.related.original_window

@@ -121,12 +121,14 @@ namespace ComputerUse.Windows
                     return;
                 }
 
+                var propertyPool = result.ContainsKey("propertyPool") ? Wire.Array(result["propertyPool"]) : null;
                 foreach (object value in Wire.Array(result["nodes"]))
                 {
                     var row = Wire.Object(value);
                     if (!Equals(row["kind"], "element") || row["properties"] == null)
                         continue;
-                    var properties = Wire.Array(row["properties"]).Select(Wire.Object).ToArray();
+                    var properties = Wire.Array(row["properties"]).Select(
+                        property => NativeObservationGraph.PropertyRecord(property, propertyPool)).ToArray();
                     Func<string, object> field = name =>
                     {
                         var property = properties.FirstOrDefault(p => Equals(Wire.Array(p["key"])[0], "windows.uia") && Equals(Wire.Array(p["key"])[1], name));

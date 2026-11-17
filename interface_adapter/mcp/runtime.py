@@ -15,6 +15,7 @@ import signal
 import sys
 from collections import deque
 from contextvars import ContextVar
+from dataclasses import replace
 
 from computer_use import Computer
 from computer_use.client.execution import ExecutionCancellation, SessionExecutor, execution_scope
@@ -62,6 +63,7 @@ from .image_presentation import PresentationImages
 from .output import ObservationOutput, ObservationPresenter, OutputBuffer
 from .receipts import receipt_evidence
 from .receipts import receipt_summary as _receipt_summary
+from .window_images import independent_window_images
 from .worker_lifecycle import READY_ENV
 from .worker_transport import WorkerMessageWriter, consume_protocol, read_message
 
@@ -254,9 +256,10 @@ class Runtime:
         if delivery is not None:
             # Reserve the standalone caption because a deferred tree no
             # longer supplies the window and coordinate context.
-            label = image_label(delivery.source, False, delivery.coordinates)
             index = len(run["imageOutputs"]) + 1
-            caption_bytes = len(utf8(f"Image {run['id']}.{index}\n{label}"))
+            for offset, member in enumerate(delivery.members or (delivery,)):
+                label = image_label(member.source, False, member.coordinates)
+                caption_bytes += len(utf8(f"Image {run['id']}.{index + offset}\n{label}"))
         remaining = available - caption_bytes
         deferred = len(utf8(text)) > remaining
         if deferred:
@@ -444,6 +447,8 @@ class Runtime:
             # Reprinting this exact public view retains its original source and
             # inverse. It cannot adopt the last image's dimensions or binding.
             run["preparedDeliveries"][id(presented[1])] = presented
+            for member in presented[5]:
+                run["preparedDeliveries"][id(member[1])] = member
             return presented[1]
         fingerprint = hashlib.sha256(png).digest()
         cached = run["preparedImages"].get(id(png))
@@ -456,12 +461,16 @@ class Runtime:
             if budget is not None:
                 budget.checkpoint()
             delivery = prepare_image(png)
+            members = independent_window_images(png)
+            if members:
+                delivery = replace(delivery, members=tuple(self.prepared_image(member) for member in members))
             cached = (
                 fingerprint,
                 delivery,
                 base64.b64encode(delivery.png).decode("ascii"),
                 image_metadata(png),
                 image_output_scope(png),
+                tuple(run["preparedDeliveries"][id(member)] for member in delivery.members),
             )
             run["preparedImages"][id(png)] = cached
             # Slots retain their original encoding even if the caller mutates
@@ -485,7 +494,7 @@ class Runtime:
         if view is not None:
             presented = dict(observation, state=original, document=view.document, sourceState=original)
         elif document is not None and delivery is not None:
-            projected = project_document(document, delivery.coordinates)
+            projected = project_document(document, delivery.coordinates, independent_windows=bool(delivery.members))
             screenshot = self.presentation_images.create(run["preparedDeliveries"][id(delivery)])
             if isinstance(original, LazyObservation):
                 bind_observation_presentation(original, projected, screenshot)
@@ -589,6 +598,10 @@ class Runtime:
         self.emit_image(delivery)
 
     def emit_image(self, delivery, *, captured_after_action=None):
+        if delivery.members:
+            for member in delivery.members:
+                self.emit_image(member, captured_after_action=captured_after_action)
+            return
         run = _runs.get()
         png = delivery.source
         prepared = run["preparedDeliveries"][id(delivery)] if run is not None else None

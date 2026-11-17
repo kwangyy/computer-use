@@ -445,7 +445,7 @@ namespace ComputerUse.Windows
             window.Validate();
             var h = window.Handle;
             if (!Interactive())
-                throw new Failure("desktop_unavailable", "input requires the unlocked interactive desktop");
+                throw Failure.DesktopUnavailable("input requires the unlocked interactive desktop");
             if (GetForegroundWindow() == h && !IsIconic(h))
                 return;
             if (NoActivate(h))

@@ -84,6 +84,7 @@ namespace ComputerUse.Windows
         readonly INativeKeyboardProvider provider;
         readonly INativeKeyboardTextProvider textProvider;
         readonly INativeClipboardProvider clipboard;
+        readonly Func<bool> startMenuVisible;
         readonly NativePreparePipeline preparationPipeline;
         internal bool SupportsText
         {
@@ -99,11 +100,13 @@ namespace ComputerUse.Windows
             }
         }
 
-        internal NativeKeyboard(INativeKeyboardProvider provider, INativeClipboardProvider clipboard = null)
+        internal NativeKeyboard(INativeKeyboardProvider provider, INativeClipboardProvider clipboard = null,
+                                Func<bool> startMenuVisible = null)
         {
             this.provider = provider;
             textProvider = provider as INativeKeyboardTextProvider;
             this.clipboard = clipboard;
+            this.startMenuVisible = startMenuVisible;
             preparationPipeline = new NativePreparePipeline(provider, Guard);
         }
 
@@ -388,7 +391,9 @@ namespace ComputerUse.Windows
                         NativeTypedText.Send(this, textProvider, operation, contract, r, result, preparation);
                     else
                     {
-                        var events = NativeKeys.Chord((string)Wire.Object(operation.Intent["parameters"])["key"]);
+                        string key = (string)Wire.Object(operation.Intent["parameters"])["key"];
+                        var events = NativeKeys.Chord(key);
+                        bool observeStart = false;
                         SendBatch(operation, events, r, result,
                                   () =>
                                   {
@@ -396,8 +401,22 @@ namespace ComputerUse.Windows
                                           throw new Failure(
                                               "input_unavailable",
                                               "the selected control or working window is not the keyboard receiver");
+                                      // A bare Win key can also close a shell surface. Preserve its normal toggle.
+                                      if (global && startMenuVisible != null && (key == "super" || key == "ctrl+Escape"))
+                                          observeStart = !startMenuVisible();
                                   });
                         result["detail"] = "Key sequence sent; read to verify its effect.";
+                        if (observeStart)
+                        {
+                            if (NativeStartMenu.WaitForVisibleForeground(startMenuVisible, r))
+                            {
+                                result["confirmation"] = "confirmed";
+                                result["detail"] = "The Windows Start/Search surface is visible in the foreground.";
+                            }
+                            else
+                                result["detail"] =
+                                    "Start shortcut sent; a visible Windows Start/Search surface was not observed.";
+                        }
                     }
 
                     r.Check(); // Return/Escape may have legitimately closed the target.

@@ -123,10 +123,18 @@ namespace ComputerUse.Windows
                 CloseHandle(process);
             }
 
-            if (target != null && target.Level > own.Level)
-                throw new Failure(
+            if (target != null)
+                RequireIntegrity(own.Level, target.Level, description, pid);
+        }
+
+        internal static void RequireIntegrity(int ownLevel, int targetLevel, string description, uint pid)
+        {
+            if (targetLevel > ownLevel)
+                throw Failure.UserAssistance(
                     "input_unavailable", description + " (PID " + pid + ") runs at a higher integrity level than the input driver; Windows UIPI input restriction.",
-                    "for an administrator target, start an explicitly elevated SDK or MCP host in this desktop and observe the target again");
+                    "Ask the user to complete this step manually, or restart the Agent/SDK/MCP host as administrator in this desktop. " +
+                    "Do not retry this blocked input with the same privileges, including through global input. " +
+                    "After user assistance, read the target again and check completed effects before continuing.");
         }
     }
 }

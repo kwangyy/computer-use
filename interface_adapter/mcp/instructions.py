@@ -54,6 +54,8 @@ class Computer:
     def list_windows(self, *, app_name: str) -> WindowCatalogue: ...
 
     # Select by application reference or name/path/bundle selector; first App.read may launch an installed app.
+    # Windows: list_apps covers running windows. A first App.read can look up and open a named
+    # Start menu app, an exact application ID, or an absolute .exe path. Confirm the resulting window.
     @overload
     def app(self, selector: int | str) -> App: ...
     # Windows: first read binds a unique, exact, case-sensitive visible title; retain the App after renames.
@@ -238,6 +240,10 @@ global events, including preparation and recovery. Windows/Linux object operatio
 may use global input. A host policy can forbid global input. For direct Computer input,
 use evidence about the actual screen point or keyboard receiver; inspect if unclear.
 macOS global input does not require a preceding read, AX lookup or window catalogue.
+On Windows, ordinary clicks prefer eligible foreground mouse input when global input
+is allowed. The SDK can activate the target and scroll an offscreen element into view
+within the same call. Use the returned screenshot to continue; perform_action requests
+the specifically named native action instead of an ordinary click.
 
 ## Output and continuation
 
@@ -246,6 +252,32 @@ every receipt and the latest automatic observation per scope; explicit reads rem
 in call order. Use print for other values and print_image(png_bytes) for custom PNGs.
 macOS direct input and Windows direct keyboard input return receipts without forced
 observations; read when the next decision needs evidence.
+Windows ordinary App/Element input includes fresh screenshots with its automatic
+observation, prioritizing new popups without rereading the original form's full
+accessibility tree or automatically requesting a popup tree. Existing Element
+bindings remain usable; read(view="tree") or read(view="both") supplies new element
+references when needed. Explicit native actions also collect tree changes. Use the
+returned image for the next step instead of immediately requesting another screenshot.
+Do not routinely batch a Windows click/type/scroll with read(view="both"): end the
+batch and inspect the automatic image first. Request a tree only when the next
+decision needs fresh element references or text. Slicing observation.text after a
+read does not reduce native collection or rendering work. Explicit both reads
+still collect both components. A clear observed result in the returned image can
+establish completion; merely returning an image or a dispatched receipt cannot.
+On Windows, report an already-set setting without toggling it. For future-entry
+or startup defaults, verify the setting's documented scope or its actual effect;
+state any unverified behavior instead of claiming it from the current on/off state.
+For a new Windows view, prefer read(view="image", window=ref) when the next decision
+is visual. Do not print observation.text again: the tool already displays it;
+filtering or slicing it does not suppress the automatically delivered tree.
+Use Observation.read_details(element=...) for details already captured, or an
+Element.read() for a needed live subtree. An incomplete tree is not a reason to
+repeat a whole-window read when the image already supports the next action.
+After a popup closes, ordinary App feedback can show its previously known owner's image.
+Without a known owner or unique current window, bounded feedback includes available
+App-window images with separate coordinate mappings and leaves the current window unknown.
+A title-bound App stays within its strict window scope. Old Elements are never rebound.
+Normal window close reports its lifecycle and current window choices.
 
 Tree diff compares the window's delivered baseline; unchanged describes collected
 content, not whether input occurred. read(full=True) restores the collected view,
@@ -255,8 +287,12 @@ tree continuation cursors go to Element.read.
 
 All screenshot coordinates use the displayed image's pixels. Use the constructor
 printed beside that image with (x, y) unchanged; the SDK handles scaling and offsets.
-Composite images use their whole canvas. Retain points across later reads and window
-translation; they preserve mappings, not frozen UI content. Follow superseded-image
+Windows multi-window tool results normally deliver each window image separately:
+use that image's own pixels and its caption's window reference. A new toast does not
+move the main window's image origin; coordinates from another window image do not
+apply. If a caption explicitly identifies a composite image, use its whole canvas;
+this also applies to composite images on other platforms. Retain points across
+later reads and window translation; they preserve mappings, not frozen UI content. Follow superseded-image
 captions when creating new points. Native detail geometry keeps its declared screen/AX
 space. Never pass screenshot pixel tuples directly to Computer input.
 
@@ -264,6 +300,12 @@ dispatched means sent; verified identifies only the stated local check. Determin
 completion from observed results. On failure, use execution progress and any retained
 receipt/observation to identify completed and remaining work. Correct invalid arguments
 when input was not dispatched; later failures do not undo earlier effects.
+On Windows, a returned "User assistance required" message identifies a confirmed access
+barrier. Notify the user immediately, explain the blocked step and request the specific
+help described in the result. Pause that step instead of repeating it or trying other
+input methods under the same restriction. After the user helps, read the target again
+and check completed effects before continuing. Do not infer a permission problem from
+ordinary input failures or read timeouts.
 Timeout/cancellation clears Python state. The next call starts fresh; applications,
 files and completed effects persist.
 
@@ -276,6 +318,9 @@ window=row.window_ref. stop_reasons marks an incomplete catalogue; missing metad
 and unlisted hidden windows do not establish absence. On Windows, a title-bound App
 continues to read only its bound window; separate confirmation windows need their own
 task-authorized scope. window_lifecycle="closed" confirms closure.
+On Windows, do not call computer.list_windows: that catalogue API is macOS-only.
+Use the window references in App reads and action feedback; select window=ref
+when the App reports multiple windows without a unique current window.
 
 type_text accepts a single line. Use paste for multiline text, tabs, or literal text
 where paste behavior fits; it inserts at the current selection. Windows Computer.paste

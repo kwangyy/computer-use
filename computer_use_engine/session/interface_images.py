@@ -96,6 +96,7 @@ class InterfaceImage:
     content_hosts: tuple[tuple[str, str], ...] = ()
     shared_pixels: tuple[tuple[str, str], ...] = ()
     identities: tuple[WindowIdentity, ...] = ()
+    independent_images: tuple[InterfaceImage, ...] = field(default=(), repr=False)
 
     def for_window(self, window: str) -> InterfaceImage | None:
         """Keep this displayed canvas, restricted to one fixed window's scope.

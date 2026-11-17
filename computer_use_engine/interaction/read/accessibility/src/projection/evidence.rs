@@ -188,6 +188,67 @@ fn nonzero(value: Option<&Value>) -> bool {
     })
 }
 
+fn anonymous_windows_group(node: &Value, issues: &[Issue<'_>]) -> bool {
+    if text(node, "role") != Some("group")
+        || !matches!(text(node, "role_description"), None | Some("" | "group" | "Group" | "组" | "群组"))
+        || ["name", "description", "help", "role_detail", "placeholder", "url"].iter().any(|key| !empty(node.get(key)))
+        || ["numeric_value", "text", "structure"].iter().any(|key| present(node.get(key)))
+        || truth(node, "shortcuts")
+    {
+        return false;
+    }
+    let (Some(states), Some(value), Some(actions)) =
+        (node.get("states"), node.get("control_value"), node.get("actions").and_then(Value::as_seq))
+        else { return false; };
+    if ["focusable", "focused", "offscreen", "protected"].iter().any(|key| states.get(key).and_then(Value::as_bool) != Some(false))
+        || rows(Some(states)).iter().any(|(key, value)| match key.as_str() {
+            "enabled" | "visible" | "showing" => value.as_bool() == Some(false),
+            "focusable" | "focused" | "offscreen" | "protected" => false,
+            _ => !matches!(value, Value::Null | Value::Bool(false)),
+        })
+        || text(value, "value") != Some("") || value.get("read_only").and_then(Value::as_bool) != Some(false)
+        || !empty(value.get("description"))
+        || issues.iter().any(|issue| {
+            [&["role"][..], &["name"], &["description"], &["help"], &["geometry"], &["actions"],
+                &["control_value"], &["states", "focused"], &["states", "focusable"]].iter().any(|path| {
+                overlaps(issue.local, path) && (issue.pending() || !matches!(issue.state(), Some("absent" | "unsupported")))
+            })
+        })
+    {
+        return false;
+    }
+    let mut invoke = false;
+    for action in actions {
+        match text(action, "kind") {
+            Some("invoke") if !invoke && text(action, "key") == Some("Invoke.Invoke")
+                && !matches!(action.get("available"), Some(Value::Bool(false))) => invoke = true,
+            Some("focus") if !present(action.get("key")) && action.get("available").and_then(Value::as_bool) == Some(false) => (),
+            Some("set_value") if !present(action.get("key"))
+                && eq_path(seq(action.get("target")), &["control_value", "value"]) => (),
+            _ => return false,
+        }
+        if truth(action, "shortcuts") {
+            return false;
+        }
+    }
+    invoke && rows(node.get("relations")).iter().all(|(_, relation)| {
+        matches!(text(relation, "kind"), Some("children" | "parent" | "window")) || targets(relation).is_empty()
+    })
+}
+
+fn confirmed_bounds(node: &Value) -> Option<&Value> {
+    let bounds = node.get("geometry")?.get("bounds")?;
+    let numeric = |key| matches!(bounds.get(key), Some(Value::Int(_) | Value::Float(_)));
+    let positive = |key| match bounds.get(key) {
+        Some(Value::Int(value)) => *value > 0,
+        Some(Value::Float(value)) => *value > 0.0,
+        _ => false,
+    };
+    (bounds.get("valid").and_then(Value::as_bool) == Some(true)
+        && present(bounds.get("space")) && numeric("x") && numeric("y")
+        && positive("width") && positive("height")).then_some(bounds)
+}
+
 fn semantic_region(node: &Value) -> bool {
     if let Some(structure) = node.get("structure") {
         if ["heading_level", "landmark", "landmark_description", "index", "set_size", "selected_count", "row_count",
@@ -417,6 +478,24 @@ impl CompressionEvidence {
             }
         }
         source_conflicts(&mut evidence, native, semantic, &aliases, ids, &issue_rows)?;
+        if text(native, "backend") == Some("windows") && !global_gap {
+            for (&token, &id) in &aliases {
+                let Some(node) = native.get("nodes").and_then(|nodes| nodes.get(token)) else { continue };
+                let Some(&child_id) = evidence.complete_children.get(&id).and_then(|children| {
+                    if let [child] = children.as_slice() { Some(child) } else { None }
+                }) else { continue };
+                let Some((&child_token, _)) = aliases.iter().find(|(_, candidate)| **candidate == child_id) else { continue };
+                let Some(child) = native.get("nodes").and_then(|nodes| nodes.get(child_token)) else { continue };
+                if related.contains(token) || parent_count.get(child_token) != Some(&1)
+                    || evidence.contested_sources.contains(&id) || evidence.contested_sources.contains(&child_id)
+                    || node.get("actions") != child.get("actions")
+                    || !confirmed_bounds(node).is_some_and(|bounds| confirmed_bounds(child) == Some(bounds))
+                    || !anonymous_windows_group(node, issue_rows.get(token).map(Vec::as_slice).unwrap_or(&[]))
+                    || !anonymous_windows_group(child, issue_rows.get(child_token).map(Vec::as_slice).unwrap_or(&[]))
+                { continue; }
+                evidence.coincident_groups.insert(id);
+            }
+        }
         if !global_gap {
             evidence.caption_sources = native_captions::capture(native, semantic, &aliases, &issue_rows);
         }

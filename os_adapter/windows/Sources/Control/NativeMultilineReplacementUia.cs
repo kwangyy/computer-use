@@ -175,7 +175,7 @@ namespace ComputerUse.Windows
                 if (!NativeSelectionInsertPipeline.CoversText(ReadSelection(r)))
                     throw new Failure("input_unavailable", "the original edit no longer has the complete selection");
                 if (!Native.Interactive())
-                    throw new Failure("desktop_unavailable", "the original input desktop changed during selection validation");
+                    throw Failure.DesktopUnavailable("the original input desktop changed during selection validation");
                 ValidateNative(r);
             }
 

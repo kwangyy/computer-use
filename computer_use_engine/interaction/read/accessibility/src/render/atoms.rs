@@ -203,6 +203,7 @@ pub(crate) struct RoleAlias {
 #[derive(Default)]
 pub(crate) struct AtomOptions<'a> {
     pub(crate) compact: bool,
+    pub(crate) windows_compact: bool,
     pub(crate) captured_details: bool,
     pub(crate) focused: Option<NodeId>,
     pub(crate) deferred: Option<&'a HashSet<FactKey>>,
@@ -963,7 +964,13 @@ fn plan_atom(
         ("selectionRequired", "Selection required", Literal),
         ("itemStatus", "Item status", Text),
     ] {
-        builder.ordinary(attribute, label, format, Some("state"))?;
+        if options.windows_compact && matches!(attribute, "protected" | "offscreen")
+            && node.field(attribute) == Some(&Value::Bool(false))
+        {
+            builder.defer_known(attribute);
+        } else {
+            builder.ordinary(attribute, label, format, Some("state"))?;
+        }
     }
     builder.nonempty("fullDescription", "Full description")?;
     for (attribute, label) in [

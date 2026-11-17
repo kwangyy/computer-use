@@ -43,7 +43,7 @@ async def run(ctx, computer, p):
 
 def artifact_at(path, *, source=DOCUMENT_PROGRAM, program_id="test.document", schema=None, acceptance=None):
     path.mkdir(parents=True, exist_ok=True)
-    (path / "program.py").write_text(source)
+    (path / "program.py").write_bytes(source.encode("utf-8"))
     schema = schema or {
         key: {"type": "string", "min_length": 1, "max_length": 4096} for key in ("document", "initial", "replacement")
     }

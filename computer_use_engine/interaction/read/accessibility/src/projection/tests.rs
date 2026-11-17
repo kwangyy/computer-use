@@ -235,3 +235,67 @@ fn branch_budget_checks_entry_and_original_preorder_work() {
     });
     assert_eq!(stopped, Err(BranchError::Budget("cancelled")));
 }
+
+#[test]
+fn windows_coincident_groups_keep_native_bindings_and_distinct_controls() {
+    use crate::{facts::FactSnapshot, wire::decode_json};
+
+    let json = |source: &str| decode_json(source.as_bytes()).unwrap();
+    let group = json(r#"{
+      "role":"group","name":"","control_value":{"value":"","read_only":false},
+      "states":{"enabled":true,"focusable":false,"focused":false,"offscreen":false,"protected":false},
+      "actions":[{"kind":"invoke","key":"Invoke.Invoke","available":true}],
+      "geometry":{"bounds":{"space":"screen","x":0,"y":0,"width":100,"height":100,"valid":true}}
+    }"#);
+    let children = |target: &str| json(&format!(r#"{{"children":{{
+      "kind":"children","targets":["{target}"],"total":1,"enumeration":"enumerated","evidence":"reported"
+    }}}}"#));
+    let mut parent = group.clone();
+    if let Value::Map(ref mut fields) = parent { fields.push(("relations".to_owned(), children("b"))); }
+    let mut child = group;
+    if let Value::Map(ref mut fields) = child { fields.push(("relations".to_owned(), children("c"))); }
+    let window = Value::Map(vec![("role".to_owned(), value("window")), ("relations".to_owned(), children("a"))]);
+    let semantic = json(r#"{
+      "refs":{"1":"w","2":"a","3":"b","4":"c"},"fields":[],
+      "roots":[{"ref":"1","role":"window","children":[
+        {"ref":"2","role":"group","_factBacked":true,"capabilities":{"click":"available"},"children":[
+          {"ref":"3","role":"group","_factBacked":true,"capabilities":{"click":"available"},"children":[
+            {"ref":"4","role":"button","name":"Save","children":[]}
+          ]}
+        ]}
+      ]}]
+    }"#);
+    for (backend, changed_bounds, named, expected) in [
+        ("windows", false, false, true),
+        ("windows", true, false, false),
+        ("windows", false, true, false),
+        ("macos", false, false, false),
+        ("linux", false, false, false),
+    ] {
+        let mut child = child.clone();
+        if changed_bounds {
+            *child.get_mut("geometry").unwrap().get_mut("bounds").unwrap().get_mut("x").unwrap() = Value::Int(1);
+        }
+        if named { *child.get_mut("name").unwrap() = value("Independent control"); }
+        let snapshot = FactSnapshot {
+            observation: Value::Map(vec![
+                ("backend".to_owned(), value(backend)),
+                ("nodes".to_owned(), Value::Map(vec![
+                    ("w".to_owned(), window.clone()), ("a".to_owned(), parent.clone()),
+                    ("b".to_owned(), child), ("c".to_owned(), json(r#"{"role":"button","name":"Save"}"#)),
+                ])),
+            ]),
+            facts: json(r#"{"nodes":[]}"#), metadata: Value::Null, query: Value::Null,
+        };
+        let ids = aliases(&["1", "2", "3", "4"]);
+        let evidence = CompressionEvidence::capture(&snapshot, &semantic, &ids).unwrap();
+        assert_eq!(evidence.coincident_groups.contains(&NodeId(1)), expected, "{backend} {changed_bounds} {named}");
+        let root = semantic.get("roots").unwrap().as_seq().unwrap()[0].clone();
+        let mut projection = Projection::prepare(root, &ids, ProjectionOptions { compact: true, ..Default::default() }).unwrap();
+        projection.compress(&evidence, &Geometry::new()).unwrap();
+        let visible = projection.visible_order().unwrap();
+        assert_eq!(!visible.contains(&NodeId(1)), expected);
+        assert!(visible.contains(&NodeId(2)) && visible.contains(&NodeId(3)));
+        assert_eq!(projection.node(NodeId(1)).unwrap().native_children, [NodeId(2)]);
+    }
+}

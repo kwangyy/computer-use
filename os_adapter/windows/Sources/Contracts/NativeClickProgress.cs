@@ -108,7 +108,22 @@ namespace ComputerUse.Windows
         {
             var preparation = new List<object>();
             foreach (var p in AttemptPreparation)
-                preparation.Add(Wire.Obj("kind", p.Kind == "foreground" ? "activation" : p.Kind == "shellMenu" ? "windowSelection" : "keyboardPreparation", "scope", new Dictionary<string, object>(target), "dispatch", p.Dispatch, "effect", p.Kind == "foreground" ? "contextOnly" : p.Observation == "unknown" ? "unknown" : "contentPossible", "continuation", p.Kind == "foreground" && p.Observation != "unknown" ? "withinScope" : p.Observation == "confirmed" ? "sameCandidate" : "observe", "observations", new[] { p.Kind + ":" + p.Observation }, "wait", p.Observation == "confirmed" ? "satisfied" : p.Observation == "unavailable" ? "exhausted" : "unavailable"));
+            {
+                // Proven zero insertion cannot manufacture content effects or
+                // disable an independent route after this preparation failed.
+                bool unchanged = p.Dispatch == "notDispatched";
+                bool contextOnly = unchanged || p.Kind == "foreground";
+                preparation.Add(Wire.Obj(
+                    "kind", p.Kind == "foreground" ? "activation" : p.Kind == "shellMenu" ? "windowSelection"
+                            : p.Kind == "scrollIntoView" ? "pointerPreparation" : "keyboardPreparation",
+                    "scope", new Dictionary<string, object>(target), "dispatch", p.Dispatch,
+                    "effect", contextOnly ? "contextOnly" : p.Observation == "unknown" ? "unknown" : "contentPossible",
+                    "continuation", unchanged || contextOnly && p.Observation != "unknown" ? "withinScope"
+                                    : p.Observation == "confirmed" ? "sameCandidate" : "observe",
+                    "observations", new[] { p.Kind + ":" + p.Observation },
+                    "wait", p.Observation == "confirmed" ? "satisfied"
+                            : p.Observation == "unavailable" ? "exhausted" : "unavailable"));
+            }
             return Wire.Obj("preparationEvidence", preparation, "transportEvidence", Wire.Obj("kind", Mechanism == null ? "none" : Mechanism == "UIA" ? "nativeAction" : "inserted", "callEntered", CallEntered, "callReturned", CallReturned, "submitted", Mechanism == "SendInput" && AcceptanceKnown ? (object)AcceptedEvents : null, "expected", Mechanism == "SendInput" ? (object)AttemptedEvents : null), "continuation", Wire.Obj("kind", HasRequestedInput ? "stop" : !ContinuationCompatible ? "observe" : Equals(retryReason, "preconditionChanged") ? "sameCandidateRefresh" : retryReason != null ? "reselectWithinScope" : "stop", "target", new Dictionary<string, object>(target), "routeFamily", family));
         }
     }

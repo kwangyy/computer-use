@@ -27,8 +27,13 @@ namespace ComputerUse.Windows
             var pointer = new NativePointer(new NativeWindowsPointer(reader.Store, captures, globalInputAllowed));
             var clipboard = new NativeWindowsClipboard();
             var keyboard = new NativeKeyboard(new NativeUiaKeyboard(reader.Store, pointer, allowGlobalInput: globalInputAllowed), clipboard);
-            var desktopKeyboard = new NativeKeyboard(new NativeDesktopKeyboard(globalInputAllowed), clipboard);
-            return new NativeRuntime(session, reader, new NativeExecution(new NativeUiaObjects(reader.Store), keyboard, pointer, new NativeScroll(new NativeUiaScroll(reader.Store)), desktopKeyboard, new NativeUiaCurrentReceiver(reader.Store)), new NativeCapture(reader.Store, session, captures), AgentPointerFeedback.Point);
+            var desktopKeyboard = new NativeKeyboard(new NativeDesktopKeyboard(globalInputAllowed), clipboard,
+                                                     NativeStartMenu.HasVisibleForeground);
+            var execution = new NativeExecution(new NativeUiaObjects(reader.Store), keyboard, pointer,
+                                                new NativeScroll(new NativeUiaScroll(reader.Store)), desktopKeyboard,
+                                                new NativeUiaCurrentReceiver(reader.Store));
+            return new NativeRuntime(session, reader, execution, new NativeCapture(reader.Store, session, captures),
+                                     AgentPointerFeedback.Point, new NativeApplicationLaunch(session, reader.Store));
         }
 
         [MTAThread]

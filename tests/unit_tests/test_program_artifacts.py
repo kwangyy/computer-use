@@ -120,7 +120,12 @@ def test_manifest_tampering_or_file_escape_is_rejected_before_import(tmp_path):
     external = tmp_path / "outside.py"
     external.write_bytes(entry.read_bytes())
     entry.unlink()
-    entry.symlink_to(external)
+    try:
+        entry.symlink_to(external)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("This Windows account has no symbolic-link privilege")
+        raise
     with pytest.raises(ValueError, match="regular files"):
         Artifact.read(artifact.path)
 

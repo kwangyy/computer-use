@@ -162,6 +162,7 @@ pub(crate) struct CompressionEvidence {
     pub(crate) complete_text: HashSet<FactKey>,
     pub(crate) complete_descriptions: HashSet<FactKey>,
     pub(crate) provider_wrappers: HashSet<NodeId>,
+    pub(crate) coincident_groups: HashSet<NodeId>,
     pub(crate) unlabelled_groups: HashSet<NodeId>,
     pub(crate) complete_children: HashMap<NodeId, Vec<NodeId>>,
     pub(crate) incomplete_children: HashSet<NodeId>,

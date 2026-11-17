@@ -29,10 +29,14 @@ from computer_use.interaction.write.passes.record_step_outcome import stage as r
 from computer_use.interaction.write.passes.write_replan_gate import stage as replan
 from computer_use.interaction.write.progress import WriteRunState
 from computer_use.interaction.write.routes.native_unit.pipeline import NativeUnitPipeline
+from computer_use.interaction.write.routes.policy import Attempts
+from computer_use.interaction.write.routes.selection.model import CandidateSet, SelectionRequest
+from computer_use.interaction.write.routes.selection.passes.select_click_offer import stage as select_click
 from computer_use.native.contracts import (
     Binding,
     Channel,
     Cleanup,
+    ClickOffer,
     Confirmation,
     Dispatch,
     Facts,
@@ -78,6 +82,36 @@ def chain(native, state):
 
 def port(**options):
     return SimpleNamespace(execute=AsyncMock(**options), calls=SimpleNamespace(retired=False))
+
+
+@pytest.mark.parametrize("platform,allowed,admission,expected", [
+    ("windows", True, "ready", "pointer"),
+    ("windows", True, "preparationRequired", "pointer"),
+    ("windows", True, "unavailable", "semantic"),
+    ("windows", False, "ready", "semantic"),
+    ("macos", True, "ready", "semantic"),
+    ("linux", True, "ready", "semantic"),
+])
+def test_windows_physical_click_preference_keeps_route_admission_and_other_platforms(
+    platform, allowed, admission, expected,
+):
+    semantic = Primitive(
+        "semantic", "native_action", Channel.OBJECT, Knowledge.YES, Knowledge.YES, action="Invoke",
+        click=ClickOffer("invoke", "semantic", "object_action", "ready"),
+    )
+    pointer = Primitive(
+        "pointer", "pointer_sequence", Channel.POINTER, Knowledge.YES, Knowledge.YES,
+        click=ClickOffer(
+            "mouse", "pointer", "desktop_pointer", admission,
+            reason="not currently available" if admission == "unavailable" else None,
+            preparation_options=("foreground",) if admission == "preparationRequired" else (),
+        ),
+    )
+    facts = replace(scenario().plan.resolved.target.facts, platform=platform, primitives=(semantic, pointer))
+    request = SelectionRequest(facts, Intent("click", {}), HostPolicy(allowed), Attempts())
+    command = select_click().run(CandidateSet(request, facts.primitives))
+    assert command.primitive.id == expected
+    assert command.foreground == (expected == "pointer" and admission == "preparationRequired")
 
 
 @pytest.mark.parametrize("dispatch,effect", [(Dispatch.UNKNOWN, "possible"), (Dispatch.PARTIAL, "partial")])

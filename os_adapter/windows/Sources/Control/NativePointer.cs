@@ -72,8 +72,8 @@ namespace ComputerUse.Windows
         internal NativeCaptureGeometry Bounds, WindowBounds, Canvas;
         internal string Layout;
         internal NativeElementHit Hit = new NativeElementHit(NativeElementHitKind.NotSampled);
-        internal bool RequiresConfirmedHit;
         internal bool GeometryDeferred;
+        internal bool VisibilityDeferred;
     }
 
     internal interface INativeElementPointerProvider
@@ -81,6 +81,11 @@ namespace ComputerUse.Windows
         NativeElementPointerTarget Element(Dictionary<string, object> target, string[] within, Request r);
         NativePointerState ReadElement(Dictionary<string, object> target, string[] within,
                                        NativeElementPointerTarget point, NativePointerGestureIntent gesture, Request r);
+    }
+
+    internal interface INativeElementVisibilityProvider
+    {
+        void PrepareVisibility(Dictionary<string, object> target, string[] within, Request r);
     }
 
     internal sealed class NativePointerPlan
@@ -287,7 +292,7 @@ namespace ComputerUse.Windows
                     state.Ready ? null
                     : state.CaptureBlocked
                         ? "Another native window owns mouse capture; activation cannot prepare this click."
-                    : state.ForegroundReady ? UnavailablePoint(plan)
+                    : state.ForegroundReady ? "The original target point is obstructed or captured."
                                             : "The selected window requires foreground preparation.",
                     !state.Ready && canPrepare ? new[] { "foreground" } : new string[0],
                     "default");
@@ -316,9 +321,8 @@ namespace ComputerUse.Windows
                          plan.Element != null && plan.Element.GeometryDeferred ? "no" : "yes", "windowRoute", "unknown",
                          "pointerRoute", state.Ready ? "yes" : "no"));
             if (!state.Ready && state.ForegroundReady)
-                result["unavailableReason"] = UnavailablePoint(
-                    plan,
-                    "The captured point cannot currently reach the selected window; inspect its current image and desktop for an obstruction or input capture.");
+                result["unavailableReason"] =
+                    "The captured point cannot currently reach the selected window; inspect its current image and desktop for an obstruction or input capture.";
             return result;
         }
 
@@ -384,16 +388,6 @@ namespace ComputerUse.Windows
                        : detail;
         }
 
-        static string UnavailablePoint(NativePointerPlan plan,
-                                       string otherwise = "The original target point is obstructed or captured.")
-        {
-            return plan.Element != null && plan.Element.Hit.Conflicts
-                       ? "The selected point hits another UIA control in the original window; no remaining requested click was sent."
-                   : plan.Element != null && plan.Element.RequiresConfirmedHit && !plan.Element.Hit.Confirmed
-                       ? "The alternate element point no longer has a confirmed UIA hit; no remaining requested click was sent."
-                       : otherwise;
-        }
-
         internal void RefreshClickPoint(NativeInputContract contract, Request r)
         {
             if (contract.Pointer.Element == null)
@@ -435,11 +429,18 @@ namespace ComputerUse.Windows
                         "another native window acquired mouse capture; no activation or requested click was sent");
                 if (!state.Ready && !state.ForegroundReady)
                 {
-                    var effect = operation.Click.Preparing("foreground");
-                    r.Check();
-                    r.Effect = true;
-                    provider.Activate(state, r);
-                    effect.Dispatch = "dispatched";
+                    NativePreparationEffect effect = null;
+                    if (!state.Foreground)
+                    {
+                        effect = operation.Click.Preparing("foreground");
+                        r.Check();
+                        r.Effect = true;
+                        provider.Activate(state, r);
+                        effect.Dispatch = "dispatched";
+                    }
+                    var visibility = provider as INativeElementVisibilityProvider;
+                    if (visibility != null && contract.Pointer.Element != null)
+                        visibility.PrepareVisibility(contract.Target, contract.Within, r);
                     double until = Math.Min(r.Deadline, Wire.Now + 400);
                     do
                     {
@@ -449,14 +450,15 @@ namespace ComputerUse.Windows
                             break;
                         r.Wait(20);
                     } while (true);
-                    effect.Observation = state.Foreground ? "confirmed" : "unavailable";
+                    if (effect != null)
+                        effect.Observation = state.Foreground ? "confirmed" : "unavailable";
                 }
             }
 
             if (!state.Ready)
                 throw new Failure(
                     "input_unavailable",
-                    UnavailablePoint(contract.Pointer, "the captured point is not reachable; no requested input sent"));
+                    "the captured point is not reachable; no requested input sent");
         }
 
         internal void CheckClick(NativeInputContract contract, Request r)
@@ -466,7 +468,7 @@ namespace ComputerUse.Windows
             if (!state.Ready)
                 throw new Failure(
                     "input_unavailable",
-                    UnavailablePoint(contract.Pointer, "the selected point no longer reaches the original target"));
+                    "the selected point no longer reaches the original target");
             contract.Pointer.DispatchRecipient = state.Recipient;
             contract.Pointer.NaturalActivation = state.NaturalActivation;
         }
@@ -680,7 +682,7 @@ namespace ComputerUse.Windows
                     if (!state.Ready)
                         throw new Failure(
                             "input_unavailable",
-                            UnavailablePoint(plan, "the captured point is not reachable; no requested input sent"));
+                            "the captured point is not reachable; no requested input sent");
                     result["confirmation"] = "confirmed";
                     result["detail"] = "The captured pointer target is reachable.";
                 }
@@ -704,7 +706,7 @@ namespace ComputerUse.Windows
                         if (!Guard(contract, 0, false, r).Ready)
                             throw new Failure(
                                 "input_unavailable",
-                                UnavailablePoint(plan, "the captured point no longer reaches the selected window"));
+                                "the captured point no longer reaches the selected window");
                     }
                     if (plan.Kind == "drag")
                     {

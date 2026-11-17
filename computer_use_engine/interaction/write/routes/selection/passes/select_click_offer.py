@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Select one fixed delivery using route-local evidence and background-first policy."""
+"""Select one eligible click delivery using the platform's input policy."""
 
 from dataclasses import replace
 
@@ -20,7 +20,7 @@ from computer_use.pipeline.core import Control
 
 
 def execute(value: CandidateSet, control: Control) -> UnitCommand:
-    """Prefer addressed delivery and preparation before occupying the global mouse.
+    """Prefer physical clicks on Windows and lower-impact delivery elsewhere.
 
     This is the only click selector. Native execution receives a single offer;
     preparation and gesture dispatch are performed in the same native boundary.
@@ -99,10 +99,17 @@ def execute(value: CandidateSet, control: Control) -> UnitCommand:
         exclusions.append(
             ClickSelectionExclusion(offer.route_family, reason, facts.observed, history.failed_steps.get(key))
         )
-    # Activation and global pointer use are independent effects. A ready HID
-    # click cannot preempt a valid addressed route just because it is ready.
+    # Windows UIA Invoke may report delivery without the physical click's effect.
+    # Prefer an eligible mouse route; unavailable/unauthorized routes stay excluded.
     order = {p.id: index for index, p in enumerate(value.primitives)}
-    choices = least_disruptive_group(ready, background, foreground)
+    groups = (ready, background, foreground)
+    physical = []
+    if facts.platform == "windows":
+        for group in groups:
+            physical = [command for command in group if command.primitive.click.delivery == "desktop_pointer"]
+            if physical:
+                break
+    choices = physical or least_disruptive_group(*groups)
     if not choices:
         record_click_selection(control, request, tuple(exclusions), None)
         if any(item.reason in ("globalInputPermissionRequired", "explicitGlobalInputRequired") for item in exclusions):

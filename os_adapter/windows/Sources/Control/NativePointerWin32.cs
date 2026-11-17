@@ -37,6 +37,7 @@ namespace ComputerUse.Windows
     internal sealed partial class NativeWindowsPointer : INativePointerProvider,
                                                          INativeCapturedPointerProvider,
                                                          INativeElementPointerProvider,
+                                                         INativeElementVisibilityProvider,
                                                          INativePointerClickTimingProvider
     {
         [DllImport("user32.dll")]
@@ -84,7 +85,7 @@ namespace ComputerUse.Windows
 
             r.Check();
             if (!Native.Interactive())
-                throw new Failure("desktop_unavailable", "pointer input requires the unlocked interactive desktop");
+                throw Failure.DesktopUnavailable("pointer input requires the unlocked interactive desktop");
             if (dragging)
                 foreach (int key in new[] { 2, 4, 16, 17, 18, 91, 92 }
 

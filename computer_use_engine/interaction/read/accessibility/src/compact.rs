@@ -75,6 +75,7 @@ impl CompactRoot {
             .map_err(CompactError::Render)?;
         let options = AtomOptions {
             compact: true, captured_details: true, focused: projection.options.focused,
+            windows_compact: snapshot.observation.get("backend").and_then(Value::as_str) == Some("windows"),
             summarized_selection: Some(&summarized), deferred: Some(&detail_policy.deferred),
             role_aliases: Some(&detail_policy.role_aliases), suppressed_actions: Some(&actions.projected),
             ..AtomOptions::default()

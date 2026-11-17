@@ -12,11 +12,13 @@ namespace ComputerUse.Windows
 {
     // Read-only pixels. No activation, UIA traversal,
     // clipboard change or legacy Backend/Frame is involved in this adapter.
-    internal sealed class NativeCapture : INativeCaptureBackend
+    internal sealed class NativeCapture : INativeCaptureBackend, IDisposable
     {
         readonly NativeReadStore store;
         readonly NativePointerCaptures captures;
         readonly string desktopScope;
+        readonly NativeCaptureWorker worker = new NativeCaptureWorker(NativeWindowPixels.StartWorker);
+        public void Dispose() { worker.Dispose(); }
         internal NativeCapture(NativeReadStore store, string session, NativePointerCaptures captures = null)
         {
             this.store = store;
@@ -28,7 +30,7 @@ namespace ComputerUse.Windows
         {
             r.Check();
             if (!Native.Interactive())
-                throw new Failure("desktop_unavailable", "capture requires the unlocked interactive desktop");
+                throw Failure.DesktopUnavailable("capture requires the unlocked interactive desktop");
         }
 
         static object Stamp(double start)
@@ -97,7 +99,7 @@ namespace ComputerUse.Windows
                                       "show the same window, or read it with allow_foreground=True if minimized");
                 var layout = captures == null ? null : new NativePointerLayout();
                 Rectangle physical = Native.Bounds(window.Handle);
-                var windowPixels = NativeWindowPixels.Read(window, maxDimension, r);
+                var windowPixels = NativeWindowPixels.Read(window, maxDimension, r, worker);
                 var geometry = windowPixels.Geometry;
                 string png = windowPixels.Png;
                 store.Validate(target, r);

@@ -484,7 +484,7 @@ def test_router_destructive_path_requires_confirmation():
     registry.register(
         make_cli(
             "rm.stuff",
-            ("echo", "removed"),
+            (sys.executable, "-c", "print('removed')"),
             risk=RiskClass.DESTRUCTIVE,
             intent="remove things",
             verify_spec=VerifySpec(kind="output_contains", expect="removed"),
@@ -697,7 +697,7 @@ def test_router_model_choice_overrides_score_ranking():
 
 def test_router_model_choice_must_stay_eligible():
     registry = PathRegistry()
-    registry.register(make_cli("rm.stuff", ("echo", "removed"), risk=RiskClass.DESTRUCTIVE, intent="remove things"))
+    registry.register(make_cli("rm.stuff", (sys.executable, "-c", "print('removed')"), risk=RiskClass.DESTRUCTIVE, intent="remove things"))
     router = Router(registry, RouterConfig(policy=RoutingPolicy(min_confidence=0.4)))
 
     plan = asyncio.run(router.plan("remove things", choose="rm.stuff"))

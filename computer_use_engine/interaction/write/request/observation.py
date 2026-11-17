@@ -86,7 +86,13 @@ class WriteWithObservation(Node[ExecuteAction, ObservedAction]):
         fixed = getattr(request.owner, "_window_identity", None)
         context_root = WindowIdentity(fixed.root_window, fixed.surface, fixed.instance) if fixed is not None else None
         window_family_only = request.intent.kind == "closeWindow"
-        if (context_root is None or window_family_only) and prior is not None:
+        windows_visual = (
+            prior is not None and prior["platform"] == "windows" and not window_family_only
+            and request.intent.kind != "action" and not getattr(request.owner, "_strict_window", False)
+        )
+        identity = WindowIdentity(request.target.root_window, request.target.surface, request.target.instance)
+        owned_visual_recovery = windows_visual and context_root == identity
+        if (context_root is None or window_family_only or owned_visual_recovery) and prior is not None:
             # A closing child can disappear while its confirmed parent remains.
             # Preserve that exact parent, including for a fixed close request.
             identity = WindowIdentity(request.target.root_window, request.target.surface, request.target.instance)
@@ -97,7 +103,7 @@ class WriteWithObservation(Node[ExecuteAction, ObservedAction]):
                     content_host(original) or (original["parent"] if original["parentState"] == "known" else None)
                 )
                 parent = next((item for item in prior["surfaces"] if item["window"] == parent_key), None)
-            context_root = WindowIdentity.of(parent) if parent is not None else None
+            context_root = WindowIdentity.of(parent) if parent is not None else context_root if owned_visual_recovery else None
         source_owner = getattr(instance, "owners", {}).get(getattr(request.target, "root_window", None))
         source = self.controller.state(source_owner) if source_owner is not None else None
         before_tree = source.query_snapshot if source is not None else None
@@ -216,6 +222,9 @@ class WriteWithObservation(Node[ExecuteAction, ObservedAction]):
             return replace(outcome, observation_status="not_requested")
         strict_window = getattr(owner, "_strict_window", False)
         related_owner = owner if strict_window else getattr(owner, "_app", owner)
+        view = "tree"
+        if getattr(self.controller.port, "platform", None) == "windows" and request.intent.kind != "closeWindow":
+            view = "both" if request.intent.kind == "action" else "image"
         if not self.session_usable(request, session_identity):
             return replace(
                 outcome,
@@ -234,7 +243,7 @@ class WriteWithObservation(Node[ExecuteAction, ObservedAction]):
             ):
                 options = {"related": related} if related is not None and not strict_window else {}
                 try:
-                    observed = await self.controller.interfaces.read(related_owner, "tree", False, None, **options)
+                    observed = await self.controller.interfaces.read(related_owner, view, False, None, **options)
                 except ComputerUseError as error:
                     if not self.close_confirmation_pending(request, outcome, error, session_identity):
                         raise
@@ -244,7 +253,7 @@ class WriteWithObservation(Node[ExecuteAction, ObservedAction]):
                     # A Windows close can remove the window from discovery
                     # before its retained native lifetime is proved ended.
                     # Recheck the exact binding in the same budget.
-                    observed = await self.controller.interfaces.read(owner, "tree", False, None)
+                    observed = await self.controller.interfaces.read(owner, view, False, None)
             metadata = observation_data(observed) or {}
             partial = metadata.get("partial", False)
             directory = metadata.get("directory")

@@ -24,12 +24,12 @@ namespace ComputerUse.Windows
                                   enabled == false ? "the selected element is disabled"
                                                    : "the selected element's enabled state could not be confirmed");
         }
-        NativeCaptureGeometry ElementBounds(NativeNodeRecord node, Request r)
+        NativeCaptureGeometry ElementBounds(NativeNodeRecord node, Request r, bool requireVisible = true)
         {
             ElementEnabled(node, r);
             bool? offscreen =
                 NativeUiaBoundary.Property(node.Element, AutomationElement.IsOffscreenProperty, r) as bool ? ;
-            if (offscreen != false)
+            if (requireVisible && offscreen != false)
                 throw new Failure("input_unavailable",
                                   offscreen == true
                                       ? "the selected element is off screen"
@@ -60,11 +60,24 @@ namespace ComputerUse.Windows
                 NativeUiaBoundary.SameWindow(window, new NativeUiaBoundary(windows).Validate(target, within, r), r);
                 return new NativeElementPointerTarget { Native = window, GeometryDeferred = true };
             }
-            var bounds = ElementBounds(node, r);
+            var bounds = ElementBounds(node, r, false);
             var rectangle = Native.Bounds(window.Native.Handle);
             var windowBounds =
                 new NativeCaptureGeometry(rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height, 1);
             var layout = new NativePointerLayout();
+            var viewport = ScrollViewport(node, windowBounds, r);
+            var visibleBounds = layout.Displays.Select(d => RectangleIntersection(bounds, viewport, d))
+                                    .FirstOrDefault(b => b != null);
+            if (visibleBounds == null)
+            {
+                // A retained off-viewport element is a preparation candidate,
+                // not an unavailable click. Querying never scrolls the UI.
+                return new NativeElementPointerTarget {
+                    Native = window, GeometryDeferred = true, VisibilityDeferred = true,
+                    Bounds = bounds, WindowBounds = windowBounds, Canvas = layout.Canvas, Layout = layout.Signature
+                };
+            }
+            ElementBounds(node, r);
             // UIA clickable points are physical screen pixels. A provider may
             // decline one; the visible intersection's center remains a candidate
             // only after native routing and the live element boundary checks.
@@ -81,10 +94,10 @@ namespace ComputerUse.Windows
                 point = new NativePointerPoint(-100001, -100001);
             }
 
-            if (!NativePointerCapture.Contains(bounds, point) || !NativePointerCapture.Contains(windowBounds, point) ||
+            if (!NativePointerCapture.Contains(bounds, point) || !NativePointerCapture.Contains(viewport, point) ||
                 !layout.Displays.Any(d => NativePointerCapture.Contains(d, point)))
             {
-                var visible = layout.Displays.Select(d => RectangleIntersection(bounds, windowBounds, d))
+                var visible = layout.Displays.Select(d => RectangleIntersection(bounds, viewport, d))
                                   .FirstOrDefault(b => b != null);
                 if (visible == null)
                     throw new Failure(
@@ -94,24 +107,15 @@ namespace ComputerUse.Windows
                     new NativePointerPoint(visible.X + visible.NativeWidth / 2, visible.Y + visible.NativeHeight / 2);
             }
 
-            // Resolve a covered provider point before the gesture freezes it.
-            // Unknown/coarse hits retain the original candidate; only a known
-            // conflict triggers bounded read-only alternatives with exact hits.
-            double until = Math.Min(r.Deadline, Wire.Now + 150);
-            var choice = NativeElementHit.SelectPoint(
-                point,
-                NativeElementHit.Alternatives(
-                    point, layout.Displays.Select(d => RectangleIntersection(bounds, windowBounds, d))),
-                candidate => ElementHit(node, candidate, r),
-                () =>
-                {
-                    r.Check();
-                    return Wire.Now < until;
-                });
+            // UIA hit testing is diagnostic. In particular same-HWND floating
+            // controls can be visible while FromPoint reports the underlying
+            // form. Keep the original geometric point instead of searching for
+            // a point which makes the unreliable provider agree.
+            var hit = ElementHit(node, point, r);
             NativeUiaBoundary.SameWindow(window, new NativeUiaBoundary(windows).Validate(target, within, r), r);
             return new NativeElementPointerTarget {
-                Native = window,        Point = choice.Point,
-                Hit = choice.Hit,       RequiresConfirmedHit = choice.RequiresConfirmed,
+                Native = window,        Point = point,
+                Hit = hit,
                 Bounds = bounds,        WindowBounds = windowBounds,
                 Canvas = layout.Canvas, Layout = layout.Signature
             };
@@ -298,8 +302,8 @@ namespace ComputerUse.Windows
             // geometry and native window route; an incomplete UIA hit is kept
             // as uncertainty in the receipt. A foreign HWND still requires the
             // explicit popup relation checks in PointerWindow, never PID alone.
-            // A confirmed same-window conflict is not missing provider data.
-            bool ready = NativePointerClickAdmission.ElementReady(route, selected.Hit, selected.RequiresConfirmedHit);
+            // UIA's same-window control identity is not visual occlusion proof.
+            bool ready = NativePointerClickAdmission.ElementReady(route, selected.Hit);
             NativeUiaBoundary.SameWindow(window, boundary.Validate(target, within, r), r);
             windows.Node(node.Id, node.Surface, r);
             rectangle = Native.Bounds(handle);
@@ -316,7 +320,7 @@ namespace ComputerUse.Windows
             route = NativeRoute(node, window, selected.Point, gesture,
                                 NativePointerClickAdmission.ElementScopeAllowsNatural(within), r);
             ready = ready &&
-                    NativePointerClickAdmission.ElementReady(route, selected.Hit, selected.RequiresConfirmedHit) &&
+                    NativePointerClickAdmission.ElementReady(route, selected.Hit) &&
                     Native.IsWindowVisible(handle) && !Native.IsIconic(handle);
             if (ready)
             {

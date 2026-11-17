@@ -44,7 +44,17 @@ namespace ComputerUse.Windows
         {
             internal UiaElement Element;
             internal bool? Modal;
+            internal ControlType PopupRole;
             internal string Error;
+        }
+
+        internal static Dictionary<string, object> MenuContent(ControlType popupRole, string owner)
+        {
+            if (popupRole != ControlType.Menu)
+                return null;
+            // An owned menu has its own HWND and pixels. An owner relationship
+            // does not prove that the host AX tree contains the menu body.
+            return Wire.Obj("kind", "menu", "host", owner, "evidence", "UIA.ControlType.Menu");
         }
 
         internal static NativeWindowRecord[] Candidates(NativeWindowRecord[] windows, string rootWindow)
@@ -75,6 +85,11 @@ namespace ComputerUse.Windows
                                 object pattern;
                                 if (result.Element.TryGetCurrentPattern(WindowPattern.Pattern, out pattern))
                                     result.Modal = ((UIA.IUIAutomationWindowPattern)pattern).CurrentIsModal != 0;
+                                const int GwlStyle = -16;
+                                const long WsPopup = 0x80000000L;
+                                if ((Native.GetWindowLongPtr(window.Native.Handle, GwlStyle).ToInt64() & WsPopup) != 0)
+                                    result.PopupRole = result.Element.GetCurrentPropertyValue(
+                                        AutomationElement.ControlTypeProperty, true) as ControlType;
                             }
                         }
                         catch (Exception error)

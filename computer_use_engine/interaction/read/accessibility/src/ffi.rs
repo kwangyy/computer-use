@@ -702,6 +702,9 @@ impl NumberedReadCapture {
             WindowContext { window_ref, current, modal, confirmed_blockers, directory_complete, scope_confirmed }
         });
         let geometric = compact && public_api && share_descriptions;
+        let quiet_windows_context = geometric && self.capture.capture.part().scope_kind == Some("window")
+            && text(&self.capture.capture.snapshot.observation, "backend") == Some("windows")
+            && window.as_ref().is_some_and(|window| window.scope_confirmed);
         let recursion = Some(ProjectionBudget::capture(py, ProjectionStage::Publication)?);
         let prepared = py.detach(|| {
             let prepared = self.capture.capture.prepare_projected_checked(
@@ -720,7 +723,7 @@ impl NumberedReadCapture {
                 Ok(PreparedRead::Legacy(LegacySnapshot::new(prepared)))
             }
         })?;
-        Ok(NativePrepared { prepared, recovery_prefix, compact, public_api })
+        Ok(NativePrepared { prepared, recovery_prefix, compact, public_api, quiet_windows_context })
     }
 }
 
@@ -730,6 +733,7 @@ pub(super) struct NativePrepared {
     recovery_prefix: usize,
     compact: bool,
     public_api: bool,
+    quiet_windows_context: bool,
 }
 
 enum PreparedRead {
@@ -763,7 +767,7 @@ impl NativePrepared {
 
     fn comparison(&self, py: Python<'_>, scope: Vec<Option<String>>, indent: i64, details: bool) -> PyResult<delivery::NativeCurrent> {
         py.detach(|| match &self.prepared {
-            PreparedRead::Compact(compact) => delivery::comparison(compact, scope, indent, details),
+            PreparedRead::Compact(compact) => delivery::comparison(compact, scope, indent, details, self.quiet_windows_context),
             PreparedRead::Legacy(legacy) => delivery::legacy_comparison(legacy, scope, indent, DisplayOptions {
                 compact: self.compact, public_api: self.public_api, details,
             }),

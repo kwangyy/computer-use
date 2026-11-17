@@ -61,6 +61,15 @@ namespace ComputerUse.Windows
             IntPtr CreateForMonitor(IntPtr monitor, ref Guid iid);
         }
 
+        static IDirect3DDevice device;
+
+        static IDirect3DDevice SharedDevice()
+        {
+            if (device == null)
+                device = Device();
+            return device;
+        }
+
         static IDirect3DDevice Device()
         {
             IntPtr native = IntPtr.Zero, context = IntPtr.Zero, dxgi = IntPtr.Zero, inspectable = IntPtr.Zero;
@@ -132,8 +141,7 @@ namespace ComputerUse.Windows
 
             var size = item.Size;
             new NativeCaptureGeometry(0, 0, size.Width, size.Height, 1);
-            using (var device = Device())
-            using (var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, size))
+            using (var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(SharedDevice(), DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, size))
             using (var session = pool.CreateCaptureSession(item))
             {
                 // Keep the OS capture indicator. Reading never requests
@@ -243,51 +251,74 @@ namespace ComputerUse.Windows
             }
         }
 
+        // The process and D3D device are warm resources; captured images,
+        // frame pools and sessions are strictly per request. No active capture
+        // survives publication of a response or the idle ReadLine below.
+        static object Capture(System.Collections.Generic.Dictionary<string, object> p)
+        {
+            var h = new IntPtr(Convert.ToInt64(p["handle"]));
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            if (!IsWindow(h) || pid != Convert.ToUInt32(p["pid"]) || IsIconic(h))
+                throw new InvalidOperationException("window is unavailable or minimized; no activation performed");
+            using (var process = Process.GetProcessById((int)pid))
+                if (process.StartTime.ToUniversalTime().Ticks != Int64.Parse((string)p["started"]))
+                    throw new InvalidOperationException("window process changed");
+            var before = Bounds(h);
+            Rectangle source = before;
+            using (var bitmap = Equals(p["route"], "wgc") ? Compositor(h, out source) : Painted(h, before))
+            {
+                if (Bounds(h) != before || IsIconic(h))
+                    throw new InvalidOperationException("window geometry changed during capture");
+                var shape = new NativeCaptureGeometry(source.X, source.Y, source.Width, source.Height, Convert.ToInt32(p["maxDimension"]));
+                using (var scaled = new Bitmap(bitmap, shape.Width, shape.Height))
+                using (var stream = new MemoryStream())
+                {
+                    scaled.Save(stream, ImageFormat.Png);
+                    if (stream.Length > 32 * 1024 * 1024)
+                        throw new InvalidOperationException("capture exceeds image budget");
+                    var png = stream.ToArray();
+                    var output = Wire.Obj("png", Convert.ToBase64String(png), "width", shape.Width, "height", shape.Height, "rect", Wire.Obj("x", source.X, "y", source.Y, "width", source.Width, "height", source.Height));
+                    if (Environment.GetEnvironmentVariable("COMPUTER_USE_WINDOWS_OCR") == "1")
+                        output["visualText"] = CaptureOcr.Read(png, shape.Width, shape.Height);
+                    return output;
+                }
+            }
+        }
+
         [MTAThread]
         static int Main()
         {
             Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+            SetProcessDpiAwarenessContext(new IntPtr(-4));
             try
             {
-                string line = Console.ReadLine();
-                if (line == null)
-                    return 0;
-                SetProcessDpiAwarenessContext(new IntPtr(-4));
-                var p = Wire.Object(Wire.Serializer().DeserializeObject(line));
-                var h = new IntPtr(Convert.ToInt64(p["handle"]));
-                uint pid;
-                GetWindowThreadProcessId(h, out pid);
-                if (!IsWindow(h) || pid != Convert.ToUInt32(p["pid"]) || IsIconic(h))
-                    throw new InvalidOperationException("window is unavailable or minimized; no activation performed");
-                using (var process = Process.GetProcessById((int)pid))
-                    if (process.StartTime.ToUniversalTime().Ticks != Int64.Parse((string)p["started"]))
-                        throw new InvalidOperationException("window process changed");
-                var before = Bounds(h);
-                Rectangle source = before;
-                using (var bitmap = Equals(p["route"], "wgc") ? Compositor(h, out source) : Painted(h, before))
+                string line;
+                while ((line = Console.ReadLine()) != null)
                 {
-                    if (Bounds(h) != before || IsIconic(h))
-                        throw new InvalidOperationException("window geometry changed during capture");
-                    var shape = new NativeCaptureGeometry(source.X, source.Y, source.Width, source.Height, Convert.ToInt32(p["maxDimension"]));
-                    using (var scaled = new Bitmap(bitmap, shape.Width, shape.Height))
-                    using (var stream = new MemoryStream())
+                    object id = null;
+                    try
                     {
-                        scaled.Save(stream, ImageFormat.Png);
-                        if (stream.Length > 32 * 1024 * 1024)
-                            throw new InvalidOperationException("capture exceeds image budget");
-                        var png = stream.ToArray();
-                        var output = Wire.Obj("png", Convert.ToBase64String(png), "width", shape.Width, "height", shape.Height, "rect", Wire.Obj("x", source.X, "y", source.Y, "width", source.Width, "height", source.Height));
-                        output["visualText"] = CaptureOcr.Read(png, shape.Width, shape.Height);
+                        var parameters = Wire.Object(Wire.Serializer().DeserializeObject(line));
+                        id = (long)Wire.Num(parameters, "id", 1, 9007199254740991, true);
+                        var output = Wire.Object(Capture(parameters));
+                        output["id"] = id;
                         Console.WriteLine(Wire.Json(output));
+                        Console.Out.Flush();
+                    }
+                    catch (Exception error)
+                    {
+                        Console.WriteLine(Wire.Json(Wire.Obj("id", id, "error", error.GetType().Name + ": " + error.Message)));
+                        Console.Out.Flush();
+                        return 1;
                     }
                 }
-
                 return 0;
             }
-            catch (Exception e)
+            finally
             {
-                Console.WriteLine(Wire.Json(Wire.Obj("error", e.GetType().Name + ": " + e.Message)));
-                return 1;
+                if (device != null)
+                    device.Dispose();
             }
         }
     }

@@ -32,6 +32,15 @@ namespace ComputerUse.Windows
         static bool unavailableForLease;
         internal static bool RequiresRestart { get; private set; }
 
+        internal static bool NeedsDesktopSupplement(string kind, string rootWindow, bool accessibility)
+        {
+            // A surfaces query already names its application. EnumWindows plus
+            // foreground discovery supplies HWNDs; NativeRootProbe enriches the
+            // selected app's roots independently. Unrelated desktop providers
+            // cannot improve those roots and must not consume their budget.
+            return kind == "applications" && accessibility && rootWindow == null;
+        }
+
         internal static bool Visible(IntPtr handle)
         {
             if (handle == IntPtr.Zero || !Native.IsWindow(handle) || !Native.IsWindowVisible(handle) || AgentPointerWindow.IsDecoration(handle))

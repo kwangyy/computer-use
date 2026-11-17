@@ -97,6 +97,7 @@ namespace ComputerUse.Windows
         readonly HashSet<string> focusedFields = new HashSet<string>();
         readonly HashSet<string> primaryFields = new HashSet<string>();
         readonly List<object> cachedFailures = new List<object>();
+        readonly Dictionary<string, NativeNodeRecord> observedParents = new Dictionary<string, NativeNodeRecord>();
         readonly NativeReadEvents events = new NativeReadEvents();
         List<string> observationNotes;
         readonly Action<string> trace;
@@ -114,7 +115,7 @@ namespace ComputerUse.Windows
             Window window = selected.Native;
             IntPtr handle = window.Handle;
             if (!Native.Interactive())
-                throw new Failure("desktop_unavailable", "observation preparation requires the unlocked interactive desktop");
+                throw Failure.DesktopUnavailable("observation preparation requires the unlocked interactive desktop");
             if (!Native.IsWindowVisible(handle))
                 throw new Failure("observation_unavailable",
                                   "the selected window is hidden; it was not replaced with another window",
@@ -236,7 +237,7 @@ namespace ComputerUse.Windows
             }
         }
 
-        static Dictionary<string, object> Stamp(double start)
+        internal static Dictionary<string, object> Stamp(double start)
         {
             return Wire.Obj("id", NativeReadStore.Token("observation"), "startedAt", Math.Floor(start), "completedAt",
                             Math.Max(Math.Floor(start), Math.Ceiling(Wire.Now)));
@@ -588,6 +589,16 @@ namespace ComputerUse.Windows
             return result;
         }
 
+        NativeNodeRecord ObservedParent(NativeNodeRecord node)
+        {
+            NativeNodeRecord parent;
+            if (observedParents.TryGetValue(node.Id, out parent))
+                return parent;
+            parent = store.KeepObservedParent(node, request);
+            observedParents[node.Id] = parent;
+            return parent;
+        }
+
         string RetainRelationMember(UiaElement item, NativeNodeRecord source)
         {
             try
@@ -692,7 +703,14 @@ namespace ComputerUse.Windows
             try
             {
                 Check();
-                if (property == "RawViewChildren")
+                AutomationPattern requiredPattern;
+                if (NativeReadSchema.RequiredPatterns.TryGetValue(property, out requiredPattern) &&
+                    !Patterns(node.Element).Any(pattern => pattern.Id == requiredPattern.Id))
+                {
+                    state = "unsupported";
+                    detail = "UIA does not expose the required pattern";
+                }
+                else if (property == "RawViewChildren")
                 {
                     var children = cache.Children(node.Element);
                     var collected = NativeReadChildCollection.Collect(
@@ -821,17 +839,16 @@ namespace ComputerUse.Windows
                 }
                 else if (property == "RawViewParent" || property == "LabeledBy")
                 {
-                    UiaElement related = property == "RawViewParent"
-                                             ? UiaClient.Parent(node.Element)
-                                             : Get(node.Element, AutomationElement.LabeledByProperty) as UiaElement;
-                    if (related != null)
+                    if (property == "RawViewParent")
                     {
-                        // Parent is an observed reverse edge, not a request to
-                        // traverse ancestors or an input-authority check.
-                        // Labels are followed, so retain their scope proof.
-                        if (property == "RawViewParent")
-                            Related(related, node, targets, memberFailures, ref state, ref detail);
-                        else
+                        var parent = ObservedParent(node);
+                        if (parent != null)
+                            targets.Add(parent.Id);
+                    }
+                    else
+                    {
+                        var related = Get(node.Element, AutomationElement.LabeledByProperty) as UiaElement;
+                        if (related != null)
                             Related(related, node, targets, memberFailures, ref state, ref detail);
                     }
                 }
@@ -1039,6 +1056,19 @@ namespace ComputerUse.Windows
                         continue;
                     }
 
+                    // Availability comes from this observation's UIA cache.
+                    // An absent optional pattern is a normal fact, not an
+                    // exception per field and node. The direct Field path
+                    // retains its existing guard for independently requested
+                    // facts. Actual provider failures still enter the catch.
+                    AutomationPattern requiredPattern;
+                    if (NativeReadSchema.RequiredPatterns.TryGetValue(field, out requiredPattern) &&
+                        !Patterns(row.Node.Element).Any(pattern => pattern.Id == requiredPattern.Id))
+                    {
+                        row.Statuses[field] = Wire.Obj("state", "unsupported", "detail",
+                            "UIA does not expose the required pattern");
+                        continue;
+                    }
                     object value = Field(row.Node, field, budget.RequestLimit);
                     var caret = field == "Text.CaretRange" ? value as Dictionary<string, object> : null;
                     if (caret != null && caret.ContainsKey("state") && Equals(caret["state"], "notProbed"))
@@ -1111,6 +1141,7 @@ namespace ComputerUse.Windows
             double start = Wire.Now;
             nativeValues.Clear();
             rangeNodes.Clear();
+            observedParents.Clear();
             var fields = Wire.Array(query["fields"]).Cast<string>().ToArray();
             int maximum = (int)Wire.Num(query, "maxNodes", 1, 2000, true),
                 depthLimit = (int)Wire.Num(query, "maxDepth", 0, 2000, true);
@@ -1156,7 +1187,8 @@ namespace ComputerUse.Windows
             if (query.ContainsKey("primaryFields"))
                 foreach (string field in Wire.Array(query["primaryFields"]))
                     primaryFields.Add(field);
-            cache = new NativeReadCache(fields, Check, message => NativeReadStore.Note(observationNotes, message),
+            cache = new NativeReadCache(fields.Concat(properties), Check,
+                                        message => NativeReadStore.Note(observationNotes, message),
                                         RecordCachedFailure);
             if (rootPage != null)
                 properties = new[] { pageProperty }.Concat(properties.Where(p => p != pageProperty)).ToArray();
@@ -1200,7 +1232,9 @@ namespace ComputerUse.Windows
                         var page = row.Node.Id == root.Id && property == pageProperty ? rootPage : null;
                         edge =
                             Edge(row.Node, property,
-                                 Math.Min(page == null ? 128 : (int)Wire.Num(page, "limit", 1, 1999, true), edgeBudget),
+                                 page == null && property == "RawViewChildren"
+                                     ? traversal.ChildPageLimit(nodes.Count, edgeBudget)
+                                     : Math.Min(page == null ? 128 : (int)Wire.Num(page, "limit", 1, 1999, true), edgeBudget),
                                  page == null ? null : page["cursor"] as string);
                     }
 
@@ -1329,6 +1363,21 @@ namespace ComputerUse.Windows
                     continue;
                 }
 
+                if (strictWindow && node.Id != root.Id && !node.Ownership.Confirmed && !node.Outside)
+                {
+                    try
+                    {
+                        // Reuse the parent edge this read already requests,
+                        // before expanding a provider's cross-window child.
+                        node.ObserveParentBoundary(ObservedParent(node));
+                    }
+                    catch (Exception error)
+                    {
+                        // Missing parent evidence cannot remove a readable
+                        // virtual child; the relation reports its own gap.
+                        Status(error);
+                    }
+                }
                 if (!NativeObservationTraversal.IncludesBody(node, strictWindow))
                 {
                     outside.Add(node.Id);
@@ -1372,7 +1421,6 @@ namespace ComputerUse.Windows
                                            "certainty", "unknown", "state", "partial", "detail", detail));
                 }
             }
-
             return NativeObservationGraph.Encode(
                 session, root.Surface, Stamp(start), new[] { root.Id }, nodes, edges,
                 traversal.Unread(seen, notes, outside), notes,
@@ -1382,10 +1430,12 @@ namespace ComputerUse.Windows
                     var identity = store.ObservedRuntime(id);
                     return identity == null ? null : new NativeObservationValue("UIA.RuntimeId", identity);
                 },
-                RetainOpaque, cachedFailures, outside);
+                RetainOpaque, cachedFailures, outside,
+                query.ContainsKey("poolReadMetadata") && Wire.Bool(query, "poolReadMetadata"),
+                query.ContainsKey("poolProperties") && Wire.Bool(query, "poolProperties"));
         }
 
-        static object[] ApplicationRows(IEnumerable<NativeWindowRecord> windows)
+        internal static object[] ApplicationRows(IEnumerable<NativeWindowRecord> windows)
         {
             return windows.GroupBy(x => x.Application).Select(g =>
             {
@@ -1465,9 +1515,10 @@ namespace ComputerUse.Windows
             string rootWindow = query.ContainsKey("rootWindow") ? Wire.Str(query, "rootWindow") : null;
             bool accessibility =
                 !NeedsRestart && (!query.ContainsKey("includeAccessibility") || (bool)query["includeAccessibility"]);
-            var catalogue = store.Catalog(request, notes, accessibility && rootWindow == null);
-            var all = catalogue.Windows;
             string kind = Wire.Str(query, "kind");
+            var catalogue = store.Catalog(request, notes,
+                NativeWindowDiscovery.NeedsDesktopSupplement(kind, rootWindow, accessibility));
+            var all = catalogue.Windows;
             if (kind == "applications")
             {
                 var result = Wire.Obj(
@@ -1548,7 +1599,10 @@ namespace ComputerUse.Windows
                 }
 
                 if (probed)
+                {
                     entry.RootNode = node;
+                    entry.ObservedPopupRole = root == null ? null : root.PopupRole;
+                }
                 IntPtr owner = Native.GetWindow(entry.Native.Handle, 4);
                 var parent = all.FirstOrDefault(x => x.Native.Handle == owner);
                 object modal = NeedsRestart    ? null
@@ -1560,13 +1614,21 @@ namespace ComputerUse.Windows
                 if (title.Length >= 4095)
                     NativeReadStore.Note(
                         notes, "A native window title reached the 4096-character Win32 buffer and may be truncated.");
-                rows.Add(Wire.Obj("window", entry.Native.Ref, "instance", entry.Native.Selector, "surface",
+                var row = Wire.Obj("window", entry.Native.Ref, "instance", entry.Native.Selector, "surface",
                                   entry.Native.Scope, "node", node, "title", NativeReadStore.Text(title), "kind",
                                   "window", "parent", parent == null ? null : parent.Native.Ref, "parentState",
                                   parent != null         ? "known"
                                   : owner == IntPtr.Zero ? "none"
                                                          : "unknown",
-                                  "modal", modal, "nativeWindow", true, "accessibility", node != null));
+                                  "modal", modal, "nativeWindow", true, "accessibility", node != null);
+                var menu = NativeRootProbe.MenuContent(entry.ObservedPopupRole,
+                                                       parent == null ? null : parent.Native.Ref);
+                if (menu != null)
+                {
+                    row["kind"] = "menu";
+                    row["content"] = menu;
+                }
+                rows.Add(row);
             }
 
             var ended = store.EndedWindows(application);

@@ -19,10 +19,25 @@ namespace ComputerUse.Windows
             Code = code;
             Next = next;
         }
+
+        internal static Failure UserAssistance(string code, string detail, string next)
+        {
+            // Operation receipts retain Message as detail, but do not carry Next.
+            // Keep confirmed Windows access barriers actionable at that boundary.
+            return new Failure(code, detail + "\nUser assistance required: Notify the user now. " + next, next);
+        }
+
+        internal static Failure DesktopUnavailable(string detail)
+        {
+            return UserAssistance("desktop_unavailable", detail,
+                "Ask the user to unlock or reconnect the Windows desktop and complete any visible UAC/security prompt manually. " +
+                "Do not retry this blocked step until the user has restored access; then read the target again before continuing.");
+        }
     }
 
     internal static class Wire
     {
+        internal const int MaxJsonLength = 64 * 1024 * 1024, JsonRecursionLimit = 256;
         internal static readonly long Epoch = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         internal static readonly Stopwatch Clock = Stopwatch.StartNew();
         internal static double Now
@@ -42,7 +57,7 @@ namespace ComputerUse.Windows
 
         internal static JavaScriptSerializer Serializer()
         {
-            return new JavaScriptSerializer { MaxJsonLength = 64 * 1024 * 1024, RecursionLimit = 256 };
+            return new JavaScriptSerializer { MaxJsonLength = MaxJsonLength, RecursionLimit = JsonRecursionLimit };
         }
 
         internal static string Json(object value)
