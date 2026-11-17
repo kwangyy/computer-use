@@ -18,7 +18,7 @@ from .native.desktop_probe import DESKTOP_UNAVAILABLE
 _LOG = logging.getLogger(__name__)
 
 LINUX_RUNTIME = Path("os_adapter/linux/.build/runtime")
-_MACOS_DRIVER = Path("os_adapter/macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver")
+_MACOS_DRIVER = Path("os_adapter/macos/.build/Jiuwen CUA.app/Contents/MacOS/computer-use-driver")
 _WINDOWS_BUILD = Path("os_adapter/windows/.build")
 _WINDOWS_DRIVER = "computer-use-driver.exe"
 _WINDOWS_CAPTURE = "computer-use-capture.exe"

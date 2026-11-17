@@ -42,28 +42,43 @@ def build_mac_os(root=None, *, configuration="release"):
     native = root / "os_adapter/macos"
     run("swift", ["build", "-c", configuration], native)
     binary = Path(run("swift", ["build", "-c", configuration, "--show-bin-path"], native, True))
-    bundle = native / ".build/ComputerUseDriver.app"
+    executable = _bundle_macos_driver(root, binary / "computer-use-driver")
+    report(executable)
+    return executable
+
+
+def _bundle_macos_driver(root, binary):
+    native = root / "os_adapter/macos"
+    bundle = native / ".build/Jiuwen CUA.app"
     executable = bundle / "Contents/MacOS/computer-use-driver"
     executable.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(binary / "computer-use-driver", executable)
+    shutil.copy2(binary, executable)
+    resources = bundle / "Contents/Resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(native / "Resources/AppIcon.icns", resources)
     (bundle / "Contents/Info.plist").write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>local.computer-use.driver</string>
-<key>CFBundleName</key><string>Computer Use Driver</string>
+<key>CFBundleIdentifier</key><string>com.openjiuwen.cua</string>
+<key>CFBundleName</key><string>Jiuwen CUA</string>
+<key>CFBundleDisplayName</key><string>Jiuwen CUA</string>
 <key>CFBundleExecutable</key><string>computer-use-driver</string>
+<key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>0.0.1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
+<key>NSScreenCaptureUsageDescription</key>
+<string>Jiuwen CUA uses screen recording to show windows and the desktop to your agent.</string>
 </dict></plist>
 """,
         encoding="utf-8",
     )
-    run("codesign", ["--force", "--sign", "-", "--identifier", "local.computer-use.driver", bundle], native)
-    report(executable)
+    run("codesign", ["--force", "--sign", "-", "--identifier", "com.openjiuwen.cua", bundle], native)
+    # Launch Services uses the bundle's timestamp, including on in-place builds.
+    bundle.touch()
     return executable
 
 
@@ -377,6 +392,19 @@ def build_windows(root=None):
 def read_permissions(request=False, root=None, timeout=None, *, protocol_version=NATIVE_PROTOCOL_VERSION):
     _protocol_version(protocol_version)
     native = native_driver(root=root)
+    if sys.platform == "darwin":
+        from computer_use.native.macos_app import open_permission_guide
+        from computer_use.native.macos_app import read_permissions as read_mac_permissions
+
+        executable = native["command"]
+        if not Path(executable).is_file():
+            raise RuntimeError("Jiuwen CUA 尚未构建，请先运行 computer-use-build。")
+        bundle = Path(executable).parents[2]
+        status = read_mac_permissions(bundle, timeout=timeout)
+        if request and not permission_state(status, "darwin")[0]:
+            open_permission_guide(bundle, timeout=timeout)
+        return status
+
     version_args = ["--protocol-version", str(protocol_version)] if sys.platform == "linux" else []
     try:
         result = subprocess.run(
@@ -413,8 +441,8 @@ def permission_state(status, platform=None):
 
 def permissions(argv=None):
     parser = argparse.ArgumentParser(
-        description="检查目标桌面权限；--request 在 macOS 发起系统授权提示，Windows 和 Linux 报告状态。"
-        "请使用与 SDK 相同的终端或宿主连接。"
+        description="检查目标桌面权限；--request 在 macOS 打开授权引导，Windows 和 Linux 报告状态。"
+        "请在目标电脑的图形桌面会话运行。"
     )
     parser.add_argument("--request", action="store_true")
     parser.add_argument(
@@ -449,21 +477,19 @@ def permissions(argv=None):
                     f"及显示环境。--request 不会更改 Linux 权限或桌面模式。"
                 )
             )
+        groups = []
+        if "accessibility" in missing or "input" in missing:
+            groups.append("辅助功能")
+        if "screenCapture" in missing:
+            groups.append("屏幕录制")
         message = (
-            "已请求缺失权限；请在系统提示或「系统设置 → 隐私与安全」中授权，必要时重启启动终端，再运行 computer-use-permissions。"
+            "请在打开的系统设置中为 Jiuwen CUA 授权。"
             if args.request
-            else "可运行 computer-use-permissions --request 发起系统授权提示。"
+            else "运行 computer-use-permissions --request 打开授权引导。"
         )
-        _LOG.warning(
-            (
-                f"未就绪："
-                f"{', '.join(missing)}"
-                f"。"
-                f"{message}"
-                f"\n权限归属以系统显示的启动程序为准（驱动、终端或 SSH 服务，例如 sshd-keygen-wrapper）；请从与 SDK "
-                f"相同的终端或 SSH 连接复查。请求命令不会代替你批准授权。"
-            )
-        )
+        _LOG.warning("Jiuwen CUA 缺少%s权限。%s", "、".join(groups), message)
+        bundle = Path(status["executable"]).parents[2]
+        _LOG.warning("列表里如果没有 Jiuwen CUA，请拖入应用，或点＋后按 ⇧⌘G 粘贴此路径。\n%s", bundle)
         return 1
     return 0
 

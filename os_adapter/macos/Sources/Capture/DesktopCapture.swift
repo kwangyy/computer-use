@@ -241,6 +241,7 @@ import CoreGraphics
                 screenshot = nil
             }
         } else {
+            DesktopPermission.screenCapture.guideOnce()
             for display in geometry.displays { failures[display.id] = "screen recording permission denied" }
         }
         try RequestDiagnostics.checkCancellation()

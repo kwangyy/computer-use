@@ -64,6 +64,7 @@ import ApplicationServices
             permitted = CGPreflightScreenCaptureAccess()
         }
         guard permitted else {
+            DesktopPermission.screenCapture.guideOnce()
             throw DriverError("screen recording permission denied", code: .desktopUnavailable)
         }
         let application: BackgroundTarget

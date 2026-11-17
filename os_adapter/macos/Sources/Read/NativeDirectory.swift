@@ -285,6 +285,7 @@ import ApplicationServices
                 }
             }
         } else {
+            DesktopPermission.accessibility.guideOnce()
             reasons.append("accessibility permission unavailable")
         }
         try BackgroundTarget(app).validate()
@@ -752,6 +753,7 @@ import ApplicationServices
             rootDiscoveryComplete = false
         }
         if !windowServices.trusted() {
+            if profile == .accessibility { DesktopPermission.accessibility.guideOnce() }
             reasons.append("accessibility permission unavailable; native windows are retained")
             rootDiscoveryComplete = false
         }
