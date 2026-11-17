@@ -171,19 +171,22 @@ class DriverWire:
             self.remaining -= 1
             if self.remaining < 0:
                 raise ValueError("driver observation: value budget exceeded")
-            if type(value) is dict:
-                if "ref" in value or "property" in value or (not allow_read and "metadataRead" in value):
+            if isinstance(value, dict):
+                forbidden_read = not allow_read and "metadataRead" in value
+                if "ref" in value or "property" in value or forbidden_read:
                     raise ValueError("driver observation: pooled records must be reference-free inline records")
                 if "metadataValue" in value:
                     index = record(value, _METADATA_REFERENCE)["metadataValue"]
                     self._pool_entry(index, self.metadata_values)
                     pending.append(self.raw["metadataValues"][index])
                 pending.extend(value.values())
-            elif type(value) is list:
+            elif isinstance(value, list):
                 pending.extend(value)
 
     @staticmethod
     def _pool_entry(index: Any, entries: list | tuple) -> Any:
+        # Pool indices must reject bool, which is an int subclass.
+        # pylint: disable-next=unidiomatic-typecheck
         if type(index) is not int or not 0 <= index < len(entries):
             raise ValueError("driver observation: invalid compact pool index")
         return entries[index]
@@ -370,7 +373,7 @@ class DriverWire:
 
     def read_info(self, value: Any) -> dict[str, Any]:
         """Decode read scope and coverage separately from element properties."""
-        if type(value) is dict and "metadataRead" in value:
+        if isinstance(value, dict) and "metadataRead" in value:
             index = record(value, {"metadataRead"})["metadataRead"]
             return self._copy_pool(self._pool_entry(index, self._read_metadata))
         return self._inline_read_info(value)
@@ -399,7 +402,7 @@ class DriverWire:
 
     def property(self, raw: Any) -> DecodedProperty:
         """Validate a field result and decode its query-local components."""
-        if type(raw) is dict and "property" in raw:
+        if isinstance(raw, dict) and "property" in raw:
             index = record(raw, {"property"})["property"]
             entry = self._pool_entry(index, self._property_pool)
             return DecodedProperty(*self._copy_pool(entry))

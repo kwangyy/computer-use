@@ -383,15 +383,19 @@ class InterfaceReadPipeline:
             owner = remember_application_content(controller, ui, target, tree)
             return (target, tree, tree_document(controller, target, tree, prepared=prepared), owner), gap
 
+        def unselected_application():
+            # Reevaluate after observing an application can select its first window.
+            # pylint: disable-next=protected-access
+            return not window_family_only and instance.anchor is None and ui._anchor is None
+
         content_gap = None
         reopen_hint = related is None and preparation is None and can_reopen_application(controller, directory)
-        # pylint: disable-next=protected-access
         unselected_windows_image = (
             not window_family_only and related is not None and view == "image"
             and directory["platform"] == "windows" and not getattr(ui, "_strict_window", False)
             and bool(instance.members)
         )
-        if not window_family_only and instance.anchor is None and ui._anchor is None and not unselected_windows_image:
+        if unselected_application() and not unselected_windows_image:
             state = controller.state(ui)
             launch = first.launch if isinstance(first, (AppObservation, MenuAppObservation)) else first
             # pylint: disable-next=protected-access
@@ -439,8 +443,7 @@ class InterfaceReadPipeline:
                         ui, (), observed=first, preparation=preparation, reopen_hint=reopen_hint,
                         full=full, on_observation=on_observation,
                     )
-        # pylint: disable-next=protected-access
-        if not window_family_only and instance.anchor is None and ui._anchor is None and not unselected_windows_image:
+        if unselected_application() and not unselected_windows_image:
             state = controller.state(ui)
             launch = first.launch if isinstance(first, (AppObservation, MenuAppObservation)) else first
             choices = controller.interfaces.windows.choices(directory, state.name or str(instance.selector))
@@ -594,8 +597,8 @@ class InterfaceReadPipeline:
                 and item["modal"] is True and item["parentState"] == "none" and item["node"] is not None
                 and identity not in related.known_windows
             )
-            # pylint: disable-next=protected-access
             initial_app_root = (
+                # pylint: disable-next=protected-access
                 initial and not window_family_only and principal_error is None and ui._anchor is None
                 # Windows collects each directory member at its own strict native
                 # boundary. This also avoids reading an owned popup twice through

@@ -20,7 +20,9 @@ def independent_window_images(png):
     canvas = source.get("coordinateImage", lambda: None)()
     controller = source.get("coordinateController", lambda: None)()
     state = source.get("coordinateOwner", lambda: None)()
-    if canvas is None or controller is None or state is None or len(canvas.pieces) < 2:
+    if canvas is None or controller is None or state is None:
+        return ()
+    if len(canvas.pieces) < 2:
         return ()
     # Different historical states of the same window must remain explicitly
     # disambiguated by the original canvas, never compete for one point alias.

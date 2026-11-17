@@ -257,7 +257,9 @@ class ExecutionSession:
 
     def _stop_by_user(self, execution_id):
         pending = self._pending
-        if self._resetting is not None or pending is None or pending["id"] != execution_id or pending["userStopped"]:
+        if self._resetting is not None or pending is None:
+            return
+        if pending["id"] != execution_id or pending["userStopped"]:
             return
         pending["userStopped"] = True
         pending["timer"].cancel()
@@ -423,7 +425,8 @@ class ExecutionSession:
                             if kind in ("command_start", "command_end"):
                                 pending["progress"]()
                             elif (
-                                kind == "sdk_operation_start" and self._banner is not None and not pending["userStopped"]
+                                kind == "sdk_operation_start" and self._banner is not None
+                                and not pending["userStopped"]
                             ):
                                 self._banner.show(pending["id"], self._stop_by_user)
                 elif "output" in message:

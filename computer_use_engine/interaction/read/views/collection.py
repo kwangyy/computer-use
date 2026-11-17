@@ -115,11 +115,13 @@ class CollectionPlan:
         attached.sort(key=lambda key: permitted[key].get("modal") is not True)
         presented = [key for key, item in permitted.items() if transient_content(item)]
         windows_visual = directory["platform"] == "windows" and self.view == "image" and self.related is not None
-        keys = dict.fromkeys((*(newly_seen if windows_visual else ()), self.principal, *attached, *newly_seen, *presented))
-        if (
+        keys = dict.fromkeys(
+            (*(newly_seen if windows_visual else ()), self.principal, *attached, *newly_seen, *presented)
+        )
+        can_reselect = (
             windows_visual and not self.related.window_family_only and not self.strict_window
-            and self.principal not in permitted
-        ):
+        )
+        if can_reselect and self.principal not in permitted:
             keys.update(dict.fromkeys(permitted))
             self.principal, self.selection_error = None, None
         if self.focused_editor is not None:
@@ -155,8 +157,9 @@ class CollectionPlan:
                 root is not None and identity in self.attempted_tree_roots
                 and self.attempted_tree_roots[identity] is None
             )
+            needs_tree_upgrade = first_ax_root and not windows_visual
             if (
-                first_ax_root and not windows_visual and "tree" not in self.captured_components.get(identity, ())
+                needs_tree_upgrade and "tree" not in self.captured_components.get(identity, ())
                 and identity not in self.tree_upgrades
             ):
                 self.tree_upgrades.add(identity)

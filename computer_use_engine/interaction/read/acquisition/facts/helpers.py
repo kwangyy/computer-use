@@ -101,9 +101,10 @@ def plan_fact_profile(scope: FactScope, capabilities: NativeReadCapabilities) ->
     elif max_depth > 40 and "nativeNodeDepthBudget" not in features:
         raise ValueError("This driver supports an explicit depth of at most 40")
     options: Record = {} if children_page is None else dict(children_page=children_page)
-    if request.strict_window or (
+    native_strict_window = (
         platform == "windows" and "nativeStrictWindowRead" in features and request.scope_kind == "window"
-    ):
+    )
+    if request.strict_window or native_strict_window:
         options["strict_window"] = True
     if relation_page is not None:
         options["relation_page"] = relation_page

@@ -92,7 +92,8 @@ class WriteWithObservation(Node[ExecuteAction, ObservedAction]):
         )
         identity = WindowIdentity(request.target.root_window, request.target.surface, request.target.instance)
         owned_visual_recovery = windows_visual and context_root == identity
-        if (context_root is None or window_family_only or owned_visual_recovery) and prior is not None:
+        recover_parent = context_root is None or window_family_only or owned_visual_recovery
+        if recover_parent and prior is not None:
             # A closing child can disappear while its confirmed parent remains.
             # Preserve that exact parent, including for a fixed close request.
             identity = WindowIdentity(request.target.root_window, request.target.surface, request.target.instance)
@@ -103,7 +104,10 @@ class WriteWithObservation(Node[ExecuteAction, ObservedAction]):
                     content_host(original) or (original["parent"] if original["parentState"] == "known" else None)
                 )
                 parent = next((item for item in prior["surfaces"] if item["window"] == parent_key), None)
-            context_root = WindowIdentity.of(parent) if parent is not None else context_root if owned_visual_recovery else None
+            if parent is not None:
+                context_root = WindowIdentity.of(parent)
+            elif not owned_visual_recovery:
+                context_root = None
         source_owner = getattr(instance, "owners", {}).get(getattr(request.target, "root_window", None))
         source = self.controller.state(source_owner) if source_owner is not None else None
         before_tree = source.query_snapshot if source is not None else None
