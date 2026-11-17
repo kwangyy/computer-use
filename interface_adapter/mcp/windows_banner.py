@@ -60,7 +60,10 @@ class WindowsExecutionBanner:
                 self._write(self._display_name)
                 if self._active is not None:
                     self._send(self._active[0])
-                while line := await process.stdout.readline():
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
                     execution_id = int(line)
                     if self._active is not None and execution_id == self._active[0]:
                         self._active[1](execution_id)
