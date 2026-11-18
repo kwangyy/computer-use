@@ -83,6 +83,61 @@ def test_platform_wheel_uses_cached_driver_without_compiling(installed, monkeypa
     assert native.build_native() == cached
 
 
+def test_windows_frozen_app_uses_its_driver_when_user_cache_is_inaccessible(installed, monkeypatch):
+    resources, _ = installed
+    executable = resources / WINDOWS_DRIVER
+    executable.parent.mkdir(parents=True)
+    for name in (executable.name, "computer-use-capture.exe", "Interop.NativeUIA.dll"):
+        executable.with_name(name).touch()
+    app = resources.parents[2] / "app.exe"
+    monkeypatch.setattr(paths, "sys", SimpleNamespace(platform="win32", frozen=True, executable=str(app)))
+
+    def inaccessible_home(cls):
+        raise PermissionError("User runtime cache is inaccessible")
+
+    monkeypatch.setattr(Path, "home", classmethod(inaccessible_home))
+    assert paths.native_driver() == {"command": str(executable.resolve()), "args": []}
+
+
+@pytest.mark.parametrize(
+    ("inside_bundle", "resigned", "use_bundled"),
+    [
+        pytest.param(True, True, True, id="signed-extraction"),
+        pytest.param(False, True, False, id="changed-hash-outside-bundle"),
+        pytest.param(False, False, True, id="verified-outside-bundle"),
+    ],
+)
+def test_windows_frozen_long_cache_checks_bundle_directory(installed, monkeypatch, inside_bundle, resigned, use_bundled):
+    resources, home = installed
+    driver = resources / WINDOWS_DRIVER
+    driver.parent.mkdir(parents=True)
+    driver_files = ("computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll")
+    manifest = {"format": 1, "target": "windows-x86_64", "protocol": native.NATIVE_PROTOCOL_VERSION, "files": {}}
+    for name in driver_files:
+        path = driver.with_name(name)
+        path.write_bytes(b"driver")
+        manifest["files"][path.relative_to(resources).as_posix()] = {"sha256": hashlib.sha256(b"driver").hexdigest()}
+    (resources / "backend.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if resigned:
+        driver.write_bytes(b"signed driver")
+
+    unpacked = resources.parents[1] if inside_bundle else resources.parents[2] / "_MEI"
+    app = resources.parents[2] / "app" / "host.exe"
+    monkeypatch.setattr(
+        paths, "sys", SimpleNamespace(platform="win32", frozen=True, executable=str(app), _MEIPASS=str(unpacked)),
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home / ("long-profile-" * 17)))
+    cache = paths._installed_runtime_target(resources)
+    assert not paths._windows_executables_fit(cache / paths._WINDOWS_BUILD)
+    assert paths._windows_executables_fit(driver.parent)
+    resolve_cache = Mock(return_value=cache)
+    monkeypatch.setattr(paths, "repository_root", resolve_cache)
+
+    expected = driver.resolve() if use_bundled else cache / WINDOWS_DRIVER
+    assert paths.native_driver() == {"command": str(expected), "args": []}
+    assert resolve_cache.call_count == (0 if use_bundled else 1)
+
+
 @pytest.mark.parametrize(("prompt", "granted"), [(False, False), (True, False), (True, True)])
 def test_macos_permissions_open_the_same_apps_guide(tmp_path, monkeypatch, caplog, prompt, granted):
     monkeypatch.setattr(sys, "platform", "darwin")
@@ -304,7 +359,9 @@ def test_source_build_includes_backend_or_status_in_manifest(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("driver_available", [True, False])
-def test_windows_source_wheel_only_bundles_runtime_files(tmp_path, monkeypatch, source_builder, driver_available):
+def test_windows_source_wheel_only_bundles_runtime_files(
+    tmp_path, monkeypatch, source_builder, installed, driver_available,
+):
     driver_files = (
         WINDOWS_DRIVER,
         "os_adapter/windows/.build/computer-use-capture.exe",
@@ -340,6 +397,13 @@ def test_windows_source_wheel_only_bundles_runtime_files(tmp_path, monkeypatch, 
         expected | {"manifest.json"}
     )
     assert set(json.loads((resources / "manifest.json").read_bytes())) == expected
+    if driver_available:
+        _, home = installed
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(paths, "__file__", str(resources.parent / "paths.py"))
+        assert paths.repository_root() == resources.resolve()
+        assert paths.native_driver()["command"] == str((resources / WINDOWS_DRIVER).resolve())
+        assert not home.exists()
 
 
 @pytest.mark.parametrize(("reason", "detail", "code"), [
