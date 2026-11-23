@@ -202,3 +202,5 @@ fn unavailable_suffix_can_keep_complete_prefix_but_unproved_or_overlapping_exten
         "reported logical cell extents overlap"
     );
 }
+
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/collections.rs"));

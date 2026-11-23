@@ -104,6 +104,8 @@ fn preserves_full_and_incremental_rendering_boundaries() {
     );
 }
 
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/render.rs"));
+
 fn v(value: &str) -> Value {
     Value::Text(value.to_owned())
 }
@@ -262,7 +264,7 @@ fn projected_lines_preserve_value_paragraphs_focus_and_action_uncertainty() {
         compact: true,
         ..LineOptions::default()
     };
-    let render = render_projection(&projection, &options).unwrap();
+    let render = render_projection(&projection, &options, &mut Default::default()).unwrap();
     assert_eq!(
         render.section.text,
         concat!(
@@ -348,7 +350,7 @@ fn geometric_row_preserves_independent_target_and_region_context() {
     plan.block_mut(toolbar).unwrap().children = vec![row];
     let plan = plan.freeze().unwrap();
     let options = WriterOptions::from_plans(&plan, &atoms, None, None, None, None).unwrap();
-    let rendered = render_geometric(&plan, &projection, &atoms, &options).unwrap().section;
+    let rendered = render_geometric(&plan, &projection, &atoms, &options, &mut Default::default()).unwrap().section;
     assert_eq!(
         rendered.text,
         "0 window Demo\n\tToolbar: 1 toolbar Tools\n\t\t2 button Open | 3 button 保存"

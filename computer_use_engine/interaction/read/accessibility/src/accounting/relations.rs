@@ -160,3 +160,7 @@ pub(super) fn account(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../../../../tests/native/accessibility/accounting/relations.rs"]
+mod tests;

@@ -314,3 +314,5 @@ fn signatures_match_python_for_typed_nested_fields_and_unicode_14() {
     assert_eq!(full, "2eb559896e7d4048138afa3d99b257e487da7c86127363cd9c934117cd4fbcb6");
     assert_eq!(content, "8d646005cc4fb4dca8469f074a0eea1b9d41397cd1df5720c31ab9462f8f120e");
 }
+
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/diff.rs"));
