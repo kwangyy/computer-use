@@ -527,10 +527,11 @@ mod tests {
             assert!(matches!(compact.roots.as_slice(), [CompactBranch::Projected(_)]));
             let comparison = compact.comparison(
                 vec![Some("surface".into())], DisplayOptions { compact: true, public_api: true, details: false }, 0,
+                &mut Default::default(),
             ).unwrap();
             assert_eq!(comparison.comparison.nodes.len(), COUNT);
             let leaf = format!("Layer {}", COUNT - 1);
-            let mut rendered = compact.render().unwrap();
+            let mut rendered = compact.render(&mut Default::default()).unwrap();
             let text = rendered.body.text();
             assert!(text.contains(&leaf));
             assert!(!text.contains("Presentation fallback"));
@@ -597,7 +598,9 @@ mod tests {
         let mut display_refs = SessionAliases::new("session".into());
         let numbers = number_parts(&mut display_refs, &[capture.part()], |_, _| Ok::<_, CaptureError>(visible.clone())).unwrap();
         let formal = capture.prepare(&numbers[0], ProjectionOptions::default()).unwrap();
-        let seed = render_projection(formal.projections().next().unwrap(), &LineOptions::default()).unwrap();
+        let seed = render_projection(
+            formal.projections().next().unwrap(), &LineOptions::default(), &mut Default::default(),
+        ).unwrap();
         let section = seed.finish_unpacked();
         assert_eq!(section.text, "0 window Rust fixture, Secondary Actions: <unavailable>");
         assert_eq!(section.nodes[0].reference, "0");
@@ -641,10 +644,10 @@ mod tests {
         };
         let prepared = capture.prepare(aliases, options.clone()).unwrap();
         let mut compact = CompactSnapshot::prepare(prepared, None, 0).unwrap();
-        let rendered = compact.render().unwrap().body;
+        let rendered = compact.render(&mut Default::default()).unwrap().body;
         let scope = vec![Some("surface".into())];
         let display = DisplayOptions { compact: true, public_api: true, details: false };
-        let comparison = compact.comparison(scope.clone(), display, 0).unwrap();
+        let comparison = compact.comparison(scope.clone(), display, 0, &mut Default::default()).unwrap();
         let baseline = ComparisonDocument { trees: vec![comparison.comparison.clone()] };
         let bindings = HashMap::from([("0".into(), "root".into())]);
         let delta = diff::plan_document_diff(Some(&baseline), Some(&[comparison]), &bindings, &bindings, &HashSet::new()).unwrap();
@@ -655,10 +658,10 @@ mod tests {
         assert_eq!(render::document(&document, &rendered, Some(&delta)).as_deref(), Some("Tree: unchanged"));
         let next = changed.prepare(aliases, options).unwrap();
         let next = CompactSnapshot::prepare(next, None, 0).unwrap();
-        let comparison = next.comparison(scope, display, 0).unwrap();
+        let comparison = next.comparison(scope, display, 0, &mut Default::default()).unwrap();
         let delta = diff::plan_document_diff(Some(&baseline), Some(&[comparison]), &bindings, &bindings, &HashSet::new()).unwrap();
         assert_eq!(delta.mode, Mode::Diff);
-        let incremental = render::document(&document, &[next.render().unwrap().body], Some(&delta)).unwrap();
+        let incremental = render::document(&document, &[next.render(&mut Default::default()).unwrap().body], Some(&delta)).unwrap();
         assert_eq!(incremental, "~0 window Updated, Secondary Actions: <unavailable>\nTree: diff");
 
         // A terminal layout failure keeps the original root capture and binding.
@@ -666,7 +669,7 @@ mod tests {
             panic!("original root should have a geometric projection");
         };
         root.interface.roots.push(BlockId(usize::MAX));
-        let mut fallback = compact.render().unwrap();
+        let mut fallback = compact.render(&mut Default::default()).unwrap();
         let [RenderedPart::Section(section), ..] = &fallback.body.parts[..] else {
             panic!("uncompressed root section was not retained");
         };
@@ -688,9 +691,9 @@ mod tests {
             || Ok::<_, CaptureError>(()),
         ).unwrap();
         let legacy = LegacySnapshot::new(prepare(false));
-        let legacy_body = legacy.render(true).unwrap();
+        let legacy_body = legacy.render(true, &mut Default::default()).unwrap();
         let compact = CompactSnapshot::prepare(prepare(true), None, 0).unwrap();
-        let compact_body = compact.render().unwrap().body;
+        let compact_body = compact.render(&mut Default::default()).unwrap().body;
         for body in [&legacy_body, &compact_body] {
             let [RenderedPart::Section(section), ..] = body.parts.as_slice() else {
                 panic!("prepared fallback must retain the original branch");
@@ -702,8 +705,11 @@ mod tests {
         }
         let comparison = compact.comparison(
             vec![Some("surface".into())], DisplayOptions { compact: true, public_api: true, details: false }, 0,
+            &mut Default::default(),
         ).unwrap();
         assert_eq!(comparison.comparison.nodes[0].reference, "0");
         assert_eq!(comparison.comparison.versions.get("0"), Some(&None));
     }
+
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/capture.rs"));
 }

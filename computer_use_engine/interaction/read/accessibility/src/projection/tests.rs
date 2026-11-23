@@ -20,6 +20,8 @@ fn aliases(refs: &[&str]) -> HashMap<String, NodeId> {
     refs.iter().enumerate().map(|(id, name)| (name.to_string(), NodeId(id))).collect()
 }
 
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/projection.rs"));
+
 #[test]
 fn deep_projection_keeps_every_named_source_on_a_read_worker_stack() {
     // The SDK permits a 2,000-object macOS read. Keep both the original source

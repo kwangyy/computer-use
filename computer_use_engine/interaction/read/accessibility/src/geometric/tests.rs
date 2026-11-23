@@ -31,6 +31,8 @@ fn geometry(boxes: &[(usize, f64, f64, f64, f64)]) -> Geometry {
         .collect()
 }
 
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/geometric.rs"));
+
 #[test]
 fn shallow_source_keeps_deep_heading_sections_on_an_sdk_worker_stack() {
     const HEADINGS: usize = 1_200;

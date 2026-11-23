@@ -291,4 +291,6 @@ mod tests {
         assert_eq!(boxes.len(), 1);
         assert!(boxes.contains_key(&NodeId(0)));
     }
+
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/geometry.rs"));
 }

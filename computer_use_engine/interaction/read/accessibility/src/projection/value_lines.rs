@@ -127,4 +127,6 @@ mod tests {
         evidence.contested_sources.insert(NodeId(1));
         assert!(covered_value_lines(&projection, owner, &parts, &evidence).unwrap().is_none());
     }
+
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/projection/value_lines.rs"));
 }

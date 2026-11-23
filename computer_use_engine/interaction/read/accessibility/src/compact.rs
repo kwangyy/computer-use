@@ -9,6 +9,7 @@ use super::{
     capture::{FailedPreparation, PreparedCapture},
     collections::{self, CollectionDocument, CollectionError},
     content::{self, readable::ReadablePlan, ContentError, FieldContentPlan},
+    delivery_budget::{DeliveryBudget, DeliveryInterrupted},
     diff::{self, CurrentTree, DisplayOptions, InvalidPreparedComparison, Scope},
     disclosure::{
         self, coverage::{self, CoverageBlock, CoverageError, CoveragePlan},
@@ -16,6 +17,8 @@ use super::{
         DisclosureError, DisclosurePlan, DisclosurePolicy,
     },
     geometric::{BlockId, GeometricContext, GeometricPlan, GeometryError},
+    geometry::outside_window_fields,
+    numbering::NodeId,
     projection::{Projection, ProjectionError},
     render::{
         atoms::{finalize_atoms, plan_atoms, policy, AtomFinalizeOptions, AtomOptions, AtomPlan, DispositionKind},
@@ -45,6 +48,12 @@ pub(crate) enum CompactError {
     Render(TextError),
 }
 
+impl From<DeliveryInterrupted> for CompactError {
+    fn from(interrupted: DeliveryInterrupted) -> Self {
+        Self::Render(interrupted.into())
+    }
+}
+
 pub(crate) struct CompactRoot {
     pub(crate) projection: Arc<Projection>,
     pub(crate) interface: GeometricPlan,
@@ -57,6 +66,7 @@ pub(crate) struct CompactRoot {
     pub(crate) coverage: CoveragePlan<BlockId>,
     pub(crate) slices: TextSliceDocument,
     pub(crate) readable: ReadablePlan,
+    pub(crate) outside_window_fields: HashSet<NodeId>,
     pub(crate) deferred_native_fields: Vec<Value>,
 }
 
@@ -131,17 +141,33 @@ impl CompactRoot {
             disclosure: Some(&disclosure), excluded_sources: &excluded_sources, excluded_slots: &excluded_slots,
         }).map_err(CompactError::Sharing)?;
         let readable = content::readable::plan(projection, &interface, &atoms, &sharing).map_err(CompactError::Content)?;
-        Ok(Self { projection: Arc::clone(projection), interface, atoms, disclosure, collections, fields, groups, sharing, coverage, slices, readable, deferred_native_fields })
+        let options = &projection.options;
+        let mut outside_window_fields = if options.compact && options.public_api && options.share_descriptions
+            && capture.semantic.get("scope_kind").and_then(Value::as_str) == Some("window")
+        {
+            outside_window_fields(&snapshot.observation, &capture.geometry, projection.root)
+        } else {
+            HashSet::new()
+        };
+        outside_window_fields.retain(|id| projection.node(*id).is_some());
+        Ok(Self {
+            projection: Arc::clone(projection), interface, atoms, disclosure, collections, fields, groups, sharing,
+            coverage, slices, readable, outside_window_fields, deferred_native_fields,
+        })
     }
 
-    pub(crate) fn render(&self) -> Result<GeometricRendered, CompactError> {
+    pub(crate) fn render(&self, backend: &str, budget: &mut DeliveryBudget<'_>) -> Result<GeometricRendered, CompactError> {
         let mut options = WriterOptions::from_plans(
             &self.interface, &self.atoms, Some(&self.disclosure), Some(&self.fields), Some(&self.readable), Some(&self.coverage),
         ).map_err(CompactError::Render)?.with_sharing(&self.atoms, Some(&self.sharing), Some(&self.slices))
             .map_err(CompactError::Render)?;
+        // The geometry is also part of comparison evidence on other platforms.
+        if backend == "macos" {
+            options = options.with_outside_window(&self.outside_window_fields);
+        }
         options.groups = Some(&self.groups);
         options.collections = Some(&self.collections);
-        render_geometric(&self.interface, &self.projection, &self.atoms, &options).map_err(CompactError::Render)
+        render_geometric(&self.interface, &self.projection, &self.atoms, &options, budget).map_err(CompactError::Render)
     }
 }
 
@@ -219,12 +245,12 @@ impl CompactSnapshot {
     }
 
     pub(crate) fn comparison(
-        &self, scope: Scope, options: DisplayOptions, indent: i64,
+        &self, scope: Scope, options: DisplayOptions, indent: i64, budget: &mut DeliveryBudget<'_>,
     ) -> Result<CurrentTree, InvalidPreparedComparison> {
-        diff::prepare_compact_comparison(scope, options, indent, &self.capture, &self.roots)
+        diff::prepare_compact_comparison(scope, options, indent, &self.capture, &self.roots, budget)
     }
 
-    pub(crate) fn render(&self) -> Result<CompactPresentation, CompactError> {
+    pub(crate) fn render(&self, budget: &mut DeliveryBudget<'_>) -> Result<CompactPresentation, CompactError> {
         let capture = &self.capture.capture;
         let native = &capture.snapshot.observation;
         let identity = ["backend", "session", "id"].map(|key| native.get(key).and_then(Value::as_str));
@@ -238,13 +264,14 @@ impl CompactSnapshot {
         let contexts = self.capture.semantic.get("root_contexts");
         let mut previous = None;
         for (root, branch) in self.roots.iter().zip(&self.capture.branches) {
+            budget.step()?;
             let reference = branch.reference().ok_or(CompactError::MissingRoot)?;
             let context = contexts.and_then(|contexts| contexts.get(reference));
             let (section, used_fallback) = match root {
                 CompactBranch::Uncompressed(failure) => (
                     self.render_fallback([backend, session, observation], &failure.references, &failure.failure)?, true,
                 ),
-                CompactBranch::Projected(root) => match render_root(root, [backend, session, observation], capture.tokens()) {
+                CompactBranch::Projected(root) => match render_root(root, [backend, session, observation], capture.tokens(), budget) {
                     Ok((section, catalogue)) => {
                         if let Some((directory, payload)) = catalogue {
                             directories.push(directory);
@@ -324,7 +351,8 @@ impl CompactSnapshot {
 
 fn presentation_failure(error: CompactError, stage: FailureStage) -> Result<PresentationFailure, CompactError> {
     let detail = match error {
-        CompactError::MissingRoot | CompactError::Source(_) | CompactError::Render(TextError::Unsupported(_)) => {
+        CompactError::MissingRoot | CompactError::Source(_)
+        | CompactError::Render(TextError::Unsupported(_) | TextError::Interrupted) => {
             return Err(error);
         }
         CompactError::Render(TextError::Invalid(detail)) => detail.to_owned(),
@@ -334,9 +362,9 @@ fn presentation_failure(error: CompactError, stage: FailureStage) -> Result<Pres
 }
 
 fn render_root(
-    root: &CompactRoot, capture: [&str; 3], tokens: &[String],
+    root: &CompactRoot, capture: [&str; 3], tokens: &[String], budget: &mut DeliveryBudget<'_>,
 ) -> Result<(RenderedSection, Option<(String, String)>), CompactError> {
-    let GeometricRendered { section, background } = root.render()?;
+    let GeometricRendered { section, background } = root.render(capture[0], budget)?;
     let catalogue = if root.groups.groups.is_empty() {
         None
     } else {

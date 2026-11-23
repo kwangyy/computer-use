@@ -636,6 +636,8 @@ mod tests {
 
     fn json(source: &str) -> Value { decode_json(source.as_bytes()).unwrap() }
 
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../tests/native/accessibility/accounting.rs"));
+
     #[test]
     fn full_column_warning_requires_exact_unique_published_order() {
         let snapshot = FactSnapshot {
